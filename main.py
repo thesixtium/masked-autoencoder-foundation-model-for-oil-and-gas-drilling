@@ -352,8 +352,10 @@ def print_metrics_table(metrics_callback, output_dir='outputs'):
     print(f"\n✅ Metrics saved to '{filepath}'")
 
 
-def visualize_reconstructions(model, test_windows_y, num_examples=3):
+def visualize_reconstructions(model, test_windows_y, num_examples=20, output_dir='outputs'):
     """Visualize reconstruction quality on random test samples"""
+    os.makedirs(output_dir, exist_ok=True)
+
     np.random.seed(42)
     random_indices = np.random.choice(len(test_windows_y), num_examples, replace=False)
 
@@ -391,12 +393,12 @@ def visualize_reconstructions(model, test_windows_y, num_examples=3):
                     color='blue', linewidth=2, alpha=0.7)
 
             feature_mae = mean_absolute_error(original[:, feature_idx],
-                                             reconstructed[:, feature_idx])
+                                              reconstructed[:, feature_idx])
             feature_rmse = np.sqrt(mean_squared_error(original[:, feature_idx],
                                                       reconstructed[:, feature_idx]))
 
             ax.set_title(f'{FEATURE_NAMES[feature_idx]} - MAE: {feature_mae:.4f}, RMSE: {feature_rmse:.4f}',
-                        fontsize=10, fontweight='bold')
+                         fontsize=10, fontweight='bold')
             ax.set_xlabel('Time Step')
             ax.set_ylabel('Normalized Value')
             ax.legend(loc='upper right', fontsize=8)
@@ -404,8 +406,10 @@ def visualize_reconstructions(model, test_windows_y, num_examples=3):
             ax.set_ylim(-0.1, 1.1)
 
         plt.tight_layout()
-        plt.savefig(f'reconstruction_example_{example_idx+1}.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        filepath = os.path.join(output_dir, f'reconstruction_example_{example_idx + 1}.png')
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        print(f"✅ Saved reconstruction example to '{filepath}'")
+        plt.close()  # Changed from plt.show() to plt.close() to avoid blocking
 
         example_mae = mean_absolute_error(original.reshape(-1), reconstructed.reshape(-1))
         example_rmse = np.sqrt(mean_squared_error(original.reshape(-1), reconstructed.reshape(-1)))
@@ -413,7 +417,6 @@ def visualize_reconstructions(model, test_windows_y, num_examples=3):
         print(f"  MAE:  {example_mae:.6f}")
         print(f"  RMSE: {example_rmse:.6f}")
         print("-" * 50)
-
 
 def main():
     """Main training pipeline"""
@@ -484,13 +487,13 @@ def main():
     model.summary()
 
     # Create callback
-    metrics_callback = MetricsCallback(train_gen, test_gen, subset_fraction=0.05)
+    metrics_callback = MetricsCallback(train_gen, test_gen, subset_fraction=0.1)
 
     # Train
     print("\n[7/7] Training model...")
     history = model.fit(
         train_gen,
-        epochs=10,
+        epochs=20,
         validation_data=test_gen,
         callbacks=[metrics_callback],
         verbose=1
