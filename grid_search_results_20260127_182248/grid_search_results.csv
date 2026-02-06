@@ -1,8 +1,0 @@
-config_idx,config_name,test_mae,status
-4,ae2_hd1_lstm_m20_tanh_adam_lr0.0001_bs64_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."
-2,ae2_hd1_lstm_m20_tanh_adam_lr0.001_bs64_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."
-1,ae2_hd1_lstm_m20_tanh_adam_lr0.001_bs32_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."
-3,ae2_hd1_lstm_m20_tanh_adam_lr0.0001_bs32_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."
-6,ae2_hd1_lstm_m20_tanh_rmsp_lr0.001_bs64_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."
-5,ae2_hd1_lstm_m20_tanh_rmsp_lr0.001_bs32_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."
-8,ae2_hd1_lstm_m20_tanh_rmsp_lr0.0001_bs64_mse,inf,"failed: The name ""lstm"" is used 2 times in the model. All layer names should be unique."

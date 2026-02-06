@@ -1,3 +1,0 @@
-config_idx,config_name,test_mae,status
-2,ae2_hd1_lstm_m20_tanh_adam_lr0.001_bs64_mse,inf,"failed: Input 0 of layer ""lstm"" is incompatible with the layer: expected ndim=3, found ndim=2. Full shape received: (None, 64)"
-4,ae2_hd1_lstm_m20_tanh_adam_lr0.0001_bs64_mse,inf,"failed: Input 0 of layer ""lstm"" is incompatible with the layer: expected ndim=3, found ndim=2. Full shape received: (None, 64)"
