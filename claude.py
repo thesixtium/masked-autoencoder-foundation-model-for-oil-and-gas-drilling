@@ -1,6 +1,8 @@
 """
 Masked Autoencoder with Hyperparameter Grid Search for Drilling Data
 Implements two-stage training: autoencoder pretraining + task header fine-tuning
+
+FIXED VERSION: Resolves the "expected ndim=3, found ndim=2" error in build_task_header
 """
 
 import pandas as pd
@@ -41,15 +43,15 @@ VARIABLE_TO_PREDICT = 'Standpipe Pressure (psi)'  # Column name to predict
 AUTOENCODER_LAYER_COUNTS = [2, 3]  # Number of encoder/decoder layers
 TASK_HEADER_LAYER_COUNTS = [1, 2]  # Number of layers in task header
 UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
-MASKING_PERCENTAGES = [0.2, 0.5]  # Percentage of data to mask during pretraining
-ACTIVATION_FUNCTIONS = ['tanh', 'relu']  # Activation functions
-LOSS_FUNCTIONS = ['mse', 'mae']  # Loss functions for both stages
-OPTIMIZERS = ['adam', 'rmsprop']  # Optimizers
+MASKING_PERCENTAGES = [0.2, 0.5, 0.8]  # Percentage of data to mask during pretraining
+ACTIVATION_FUNCTIONS = ['tanh']  # Activation functions
+LOSS_FUNCTIONS = ['mae']  # Loss functions for both stages
+OPTIMIZERS = ['adam']  # Optimizers
 LEARNING_RATES = [0.001, 0.0001]  # Learning rates
-BATCH_SIZES = [32, 64]  # Batch sizes
+BATCH_SIZES = [64]  # Batch sizes
 EPOCHS_AUTOENCODER = [10]  # Epochs for autoencoder pretraining
 EPOCHS_TASK_HEADER = [15]  # Epochs for task header training
-NUM_THREADS = 4  # Number of parallel workers
+NUM_THREADS = 1  # Number of parallel workers - set to 1 to avoid TensorFlow threading issues
 
 # Early stopping patience
 EARLY_STOPPING_PATIENCE = 5
@@ -61,13 +63,33 @@ SUBSET_PERCENT = 0.3
 print(f"TensorFlow: {tf.__version__}")
 print(f"NumPy: {np.__version__}")
 
+# Configure TensorFlow for stability
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'  # Allow gradual GPU memory allocation
+
+# Set memory growth for GPUs to prevent OOM errors
+try:
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"GPU devices found: {len(gpus)}")
+    else:
+        print("No GPU devices found, using CPU")
+except Exception as e:
+    print(f"GPU configuration note: {e}")
+
+# Set threading for CPU operations
+tf.config.threading.set_inter_op_parallelism_threads(2)
+tf.config.threading.set_intra_op_parallelism_threads(2)
+
 # Column definitions
 COLUMNS = [
     'Weight on Bit (klbs)',
     'Rotary RPM (RPM)',
     'Total Pump Output (gal_per_min)',
     'Rate Of Penetration (ft_per_hr)',
- #   'Standpipe Pressure (psi)',
+    'Standpipe Pressure (psi)',
     'Rotary Torque (kft_lb)',
     'Hole Depth (feet)',
     'Bit Depth (feet)'
@@ -78,7 +100,7 @@ FEATURE_NAMES = [
     'Rotary RPM',
     'Total Pump Output',
     'Rate Of Penetration',
-  #  'Standpipe Pressure',
+    'Standpipe Pressure',
     'Rotary Torque',
     'Hole Depth',
     'Bit Depth'
@@ -372,6 +394,8 @@ def build_task_header(encoder_model, n_layers, unit_type, activation, units_per_
     """
     Build task header network on top of frozen encoder
 
+    FIXED: Properly handles 2D output from encoder's last layer
+
     Args:
         encoder_model: Trained autoencoder model
         n_layers: Number of layers in task header
@@ -392,13 +416,23 @@ def build_task_header(encoder_model, n_layers, unit_type, activation, units_per_
     # Build encoder part with frozen weights
     inputs = Input(shape=encoder_model.input_shape[1:])
     x = inputs
-    for layer in encoder_layers:
+    for i, layer in enumerate(encoder_layers):
         # Create new layer with same config and weights
-        new_layer = type(layer).from_config(layer.get_config())
+        layer_config = layer.get_config()
+        # Give unique name to avoid conflicts
+        layer_config['name'] = f"frozen_encoder_{layer_config['name']}_{i}"
+        new_layer = type(layer).from_config(layer_config)
         new_layer.build(x.shape)
         new_layer.set_weights(layer.get_weights())
         new_layer.trainable = False  # Freeze encoder
         x = new_layer(x)
+
+    # FIX: If the encoder output is 2D (from last LSTM/GRU without return_sequences),
+    # we need to expand it back to 3D for the task header RNN layers
+    # Check the shape of x - if it's 2D, expand to 3D
+    if len(x.shape) == 2:
+        # Expand dims to make it (batch, 1, features) so RNN layers can process it
+        x = tf.expand_dims(x, axis=1)
 
     # Add task header layers
     if units_per_layer is None:
@@ -569,7 +603,7 @@ def train_task_header(config, encoder_model, train_data, train_targets, test_dat
     test_mae = mean_absolute_error(test_targets, predictions.flatten())
 
     # Save task header
-    model_filename = f"task_header_{config['config_name']}.h5"
+    model_filename = f"task_header_{config['config_name']}.keras"
     model_path = os.path.join(output_dir, model_filename)
     model.save(model_path)
 
@@ -711,12 +745,18 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         tf.keras.backend.clear_session()
         gc.collect()
 
+        # Force additional cleanup
+        import time
+        time.sleep(0.1)  # Brief pause to allow cleanup
+
         print(f"  ✓ Configuration complete!")
 
         return result
 
     except Exception as e:
+        import traceback
         print(f"\n  ✗ ERROR in configuration {config_idx}: {str(e)}")
+        print(f"  Traceback: {traceback.format_exc()}")
 
         result = {
             'config_idx': config_idx,
@@ -804,12 +844,16 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
             with file_lock:
                 save_results_csv(results, output_dir)
     else:
-        # Parallel execution
+        # Parallel execution using ProcessPoolExecutor (better for TensorFlow)
         print(f"\n{'=' * 70}")
         print("Starting parallel grid search...")
         print(f"{'=' * 70}\n")
 
-        with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+        from multiprocessing import Manager
+        manager = Manager()
+        results_list = manager.list()
+
+        with ProcessPoolExecutor(max_workers=NUM_THREADS) as executor:
             # Submit all jobs
             future_to_config = {
                 executor.submit(
@@ -823,12 +867,11 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
             for future in as_completed(future_to_config):
                 idx, config = future_to_config[future]
                 try:
-                    result = future.result()
+                    result = future.result(timeout=3600)  # 1 hour timeout per config
                     results.append(result)
 
                     # Save intermediate results after each completion
-                    with file_lock:
-                        save_results_csv(results, output_dir)
+                    save_results_csv(results, output_dir)
 
                     print(f"\n✓ Completed {len(results)}/{len(combinations)} configurations")
 

@@ -1,0 +1,4 @@
+config_idx,config_name,n_ae_layers,n_header_layers,unit_type,mask_percent,activation,loss,optimizer,learning_rate,batch_size,epochs_ae,epochs_header,test_mae,final_ae_loss,final_header_loss,status
+1,ae2_hd1_lstm_m20_tanh_adam_lr0.001_bs32_mse,2,1,LSTM,0.2,tanh,mse,adam,0.001,32,10,15,0.0048879865,0.0012685719411820173,5.479835090227425e-05,success
+2,ae2_hd1_lstm_m20_tanh_adam_lr0.001_bs64_mse,2,1,LSTM,0.2,tanh,mse,adam,0.001,64,10,15,0.005449389,0.0019305458990857005,6.610614218516275e-05,success
+3,ae2_hd1_lstm_m20_tanh_adam_lr0.0001_bs32_mse,2,1,LSTM,0.2,tanh,mse,adam,0.0001,32,10,15,0.010778912,0.002399714896455407,0.00025015120627358556,success

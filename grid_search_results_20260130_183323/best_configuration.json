@@ -1,0 +1,19 @@
+{
+  "config_idx": 19,
+  "config_name": "ae2_hd2_gru_m20_tanh_adam_lr0.001_bs64_mae",
+  "n_ae_layers": 2,
+  "n_header_layers": 2,
+  "unit_type": "GRU",
+  "mask_percent": 0.2,
+  "activation": "tanh",
+  "loss": "mae",
+  "optimizer": "adam",
+  "learning_rate": 0.001,
+  "batch_size": 64,
+  "epochs_ae": 10,
+  "epochs_header": 15,
+  "test_mae": 0.0017124623991549015,
+  "final_ae_loss": 0.009006842039525509,
+  "final_header_loss": 0.0018182792700827122,
+  "status": "success"
+}
