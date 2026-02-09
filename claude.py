@@ -24,6 +24,12 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 from datetime import datetime
 import json
 from threading import Lock
+# ============================================================================
+# *** NEW: Added seaborn for correlation heatmap visualization ***
+# ============================================================================
+import seaborn as sns
+
+# ============================================================================
 
 # ============================================================================
 # CONFIGURATION - Hyperparameter Grid Search Settings
@@ -33,10 +39,10 @@ from threading import Lock
 VARIABLE_TO_PREDICT = 'Total Mud Volume (barrels)'  # Column name to predict
 
 # Hyperparameter grid search space
-AUTOENCODER_LAYER_COUNTS = [2, 3]  # Number of encoder/decoder layers
-TASK_HEADER_LAYER_COUNTS = [1, 2]  # Number of layers in task header
+AUTOENCODER_LAYER_COUNTS = [2]  # Number of encoder/decoder layers
+TASK_HEADER_LAYER_COUNTS = [2]  # Number of layers in task header
 UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
-MASKING_PERCENTAGES = [0.2, 0.5, 0.8]  # Percentage of data to mask during pretraining
+MASKING_PERCENTAGES = [0.2, 0.8]  # Percentage of data to mask during pretraining
 ACTIVATION_FUNCTIONS = ['tanh']  # Activation functions
 LOSS_FUNCTIONS = ['mae']  # Loss functions for both stages
 OPTIMIZERS = ['adam']  # Optimizers
@@ -47,13 +53,22 @@ EPOCHS_TASK_HEADER = [15]  # Epochs for task header training
 NUM_THREADS = 1  # Number of parallel workers - set to 1 to avoid TensorFlow threading issues
 
 # ============================================================================
-# *** NEW: BASELINE LSTM CONFIGURATION ***
+# *** BASELINE LSTM CONFIGURATION ***
 # ============================================================================
 BASELINE_LSTM_HIDDEN_SIZE = 64  # Fixed LSTM hidden size for baseline
 BASELINE_DROPOUT_RATE = 0.3  # Fixed dropout rate for baseline
 BASELINE_LEARNING_RATE = 0.001  # Learning rate for baseline
 BASELINE_BATCH_SIZE = 64  # Batch size for baseline
 BASELINE_EPOCHS = 15  # Number of epochs for baseline training
+
+# ============================================================================
+# *** NEW: BASELINE GRU CONFIGURATION (identical to LSTM except layer type) ***
+# ============================================================================
+BASELINE_GRU_HIDDEN_SIZE = 64  # Fixed GRU hidden size for baseline
+BASELINE_GRU_DROPOUT_RATE = 0.3  # Fixed dropout rate for baseline
+BASELINE_GRU_LEARNING_RATE = 0.001  # Learning rate for baseline
+BASELINE_GRU_BATCH_SIZE = 64  # Batch size for baseline
+BASELINE_GRU_EPOCHS = 15  # Number of epochs for baseline training
 # ============================================================================
 
 # Early stopping patience
@@ -275,6 +290,269 @@ def preprocess_data_once():
 
 
 # ============================================================================
+# *** NEW: EXPLORATORY DATA ANALYSIS (EDA) FUNCTIONS ***
+# ============================================================================
+
+def perform_eda(train_data, test_data, train_targets, test_targets, output_dir):
+    """
+    Perform comprehensive EDA on preprocessed data and save visualizations
+
+    Args:
+        train_data: Training data (n_samples, timesteps, n_features)
+        test_data: Test data (n_samples, timesteps, n_features)
+        train_targets: Training targets
+        test_targets: Test targets
+        output_dir: Base output directory (EDA subfolder will be created)
+    """
+    print("\n" + "=" * 70)
+    print("EXPLORATORY DATA ANALYSIS (EDA)")
+    print("=" * 70)
+
+    # Create EDA subdirectories
+    eda_dir = os.path.join(output_dir, 'eda')
+    correlation_dir = os.path.join(eda_dir, 'correlations')
+    scatter_dir = os.path.join(eda_dir, 'scatter_plots')
+
+    os.makedirs(eda_dir, exist_ok=True)
+    os.makedirs(correlation_dir, exist_ok=True)
+    os.makedirs(scatter_dir, exist_ok=True)
+
+    print(f"EDA output directory: {eda_dir}/")
+
+    # Combine train and test data for comprehensive analysis
+    all_data = np.concatenate([train_data, test_data], axis=0)
+    all_targets = np.concatenate([train_targets, test_targets], axis=0)
+
+    print(f"\n[1/6] Computing summary statistics...")
+    # Average each window across time to get feature-level statistics
+    # Shape: (n_samples, n_features)
+    averaged_data = np.mean(all_data, axis=1)
+
+    # Create DataFrame for easier manipulation
+    df_averaged = pd.DataFrame(averaged_data, columns=FEATURE_NAMES)
+
+    # Compute summary statistics
+    summary_stats = df_averaged.describe()
+
+    # Save summary statistics as an image
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.axis('tight')
+    ax.axis('off')
+
+    # Create table
+    table_data = []
+    table_data.append(['Statistic'] + FEATURE_NAMES)
+    for stat_name in ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']:
+        row = [stat_name]
+        for feature in FEATURE_NAMES:
+            row.append(f"{summary_stats.loc[stat_name, feature]:.4f}")
+        table_data.append(row)
+
+    table = ax.table(cellText=table_data, cellLoc='center', loc='center',
+                     colWidths=[0.15] + [0.1] * len(FEATURE_NAMES))
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 2)
+
+    # Style header row
+    for i in range(len(FEATURE_NAMES) + 1):
+        table[(0, i)].set_facecolor('#40466e')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+
+    plt.title('Summary Statistics of Time-Averaged Features',
+              fontsize=14, fontweight='bold', pad=20)
+
+    summary_path = os.path.join(eda_dir, 'summary_statistics.png')
+    plt.savefig(summary_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"   ✓ Summary statistics saved to: {summary_path}")
+
+    # ========================================================================
+    print(f"\n[2/6] Computing correlation matrix...")
+    # Compute correlation matrix
+    corr_matrix = df_averaged.corr()
+
+    # Save correlation matrix as heatmap
+    fig, ax = plt.subplots(figsize=(12, 10))
+    sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm',
+                center=0, square=True, linewidths=1, cbar_kws={"shrink": 0.8},
+                xticklabels=FEATURE_NAMES, yticklabels=FEATURE_NAMES, ax=ax)
+    plt.title('Correlation Matrix of Time-Averaged Features',
+              fontsize=14, fontweight='bold', pad=15)
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+
+    corr_path = os.path.join(correlation_dir, 'correlation_heatmap.png')
+    plt.savefig(corr_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"   ✓ Correlation heatmap saved to: {corr_path}")
+
+    # ========================================================================
+    print(f"\n[3/6] Generating scatter plots against target variable...")
+    # Get target variable index
+    target_idx = COLUMNS.index(VARIABLE_TO_PREDICT)
+    target_feature_name = FEATURE_NAMES[target_idx]
+
+    # Create scatter plots for each feature vs target
+    n_features = len(FEATURE_NAMES)
+    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+    axes = axes.flatten()
+
+    for i, feature_name in enumerate(FEATURE_NAMES):
+        ax = axes[i]
+
+        if i == target_idx:
+            # For target vs itself, show distribution
+            ax.hist(df_averaged.iloc[:, i], bins=50, edgecolor='black', alpha=0.7)
+            ax.set_xlabel(feature_name)
+            ax.set_ylabel('Frequency')
+            ax.set_title(f'{feature_name} Distribution')
+            ax.grid(True, alpha=0.3)
+        else:
+            # Scatter plot
+            ax.scatter(df_averaged.iloc[:, i], df_averaged.iloc[:, target_idx],
+                       alpha=0.3, s=10)
+            ax.set_xlabel(feature_name)
+            ax.set_ylabel(target_feature_name)
+            ax.set_title(f'{feature_name} vs {target_feature_name}')
+            ax.grid(True, alpha=0.3)
+
+            # Add correlation coefficient
+            corr_val = corr_matrix.iloc[i, target_idx]
+            ax.text(0.05, 0.95, f'r = {corr_val:.3f}',
+                    transform=ax.transAxes, fontsize=10,
+                    verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    scatter_all_path = os.path.join(scatter_dir, 'all_features_vs_target.png')
+    plt.savefig(scatter_all_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"   ✓ All scatter plots saved to: {scatter_all_path}")
+
+    # ========================================================================
+    print(f"\n[4/6] Generating individual scatter plots...")
+    # Save individual scatter plots for each feature
+    for i, feature_name in enumerate(FEATURE_NAMES):
+        if i == target_idx:
+            continue  # Skip target vs itself
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.scatter(df_averaged.iloc[:, i], df_averaged.iloc[:, target_idx],
+                   alpha=0.3, s=15)
+        ax.set_xlabel(feature_name, fontsize=12)
+        ax.set_ylabel(target_feature_name, fontsize=12)
+        ax.set_title(f'{feature_name} vs {target_feature_name}',
+                     fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # Add correlation coefficient
+        corr_val = corr_matrix.iloc[i, target_idx]
+        ax.text(0.05, 0.95, f'Correlation: {corr_val:.3f}',
+                transform=ax.transAxes, fontsize=11,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+        plt.tight_layout()
+
+        # Clean feature name for filename
+        clean_name = feature_name.replace(' ', '_').replace('/', '_')
+        individual_path = os.path.join(scatter_dir, f'{clean_name}_vs_target.png')
+        plt.savefig(individual_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+    print(f"   ✓ Individual scatter plots saved to: {scatter_dir}/")
+
+    # ========================================================================
+    print(f"\n[5/6] Generating distribution plots...")
+    # Feature distributions
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+    axes = axes.flatten()
+
+    for i, feature_name in enumerate(FEATURE_NAMES):
+        ax = axes[i]
+        ax.hist(df_averaged.iloc[:, i], bins=50, edgecolor='black', alpha=0.7, color='steelblue')
+        ax.set_xlabel(feature_name)
+        ax.set_ylabel('Frequency')
+        ax.set_title(f'{feature_name} Distribution')
+        ax.grid(True, alpha=0.3)
+
+        # Add statistics
+        mean_val = df_averaged.iloc[:, i].mean()
+        std_val = df_averaged.iloc[:, i].std()
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.3f}')
+        ax.legend()
+
+    plt.tight_layout()
+    dist_path = os.path.join(eda_dir, 'feature_distributions.png')
+    plt.savefig(dist_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"   ✓ Feature distributions saved to: {dist_path}")
+
+    # ========================================================================
+    print(f"\n[6/6] Generating additional analysis plots...")
+
+    # Target distribution comparison (train vs test)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax = axes[0]
+    ax.hist(train_targets, bins=50, alpha=0.6, label='Train', edgecolor='black')
+    ax.hist(test_targets, bins=50, alpha=0.6, label='Test', edgecolor='black')
+    ax.set_xlabel(target_feature_name)
+    ax.set_ylabel('Frequency')
+    ax.set_title('Target Distribution: Train vs Test')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Box plot comparison
+    ax = axes[1]
+    ax.boxplot([train_targets, test_targets], labels=['Train', 'Test'])
+    ax.set_ylabel(target_feature_name)
+    ax.set_title('Target Distribution Box Plot')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    target_dist_path = os.path.join(eda_dir, 'target_train_test_comparison.png')
+    plt.savefig(target_dist_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"   ✓ Target comparison saved to: {target_dist_path}")
+
+    # Pairwise correlation strength ranking
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Get correlations with target and sort
+    target_corrs = corr_matrix[target_feature_name].drop(target_feature_name).sort_values(ascending=True)
+
+    colors = ['green' if x > 0 else 'red' for x in target_corrs.values]
+    y_pos = np.arange(len(target_corrs))
+
+    ax.barh(y_pos, target_corrs.values, color=colors, alpha=0.7)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(target_corrs.index)
+    ax.set_xlabel('Correlation Coefficient')
+    ax.set_title(f'Feature Correlations with {target_feature_name}',
+                 fontsize=14, fontweight='bold')
+    ax.axvline(0, color='black', linewidth=0.8)
+    ax.grid(True, alpha=0.3, axis='x')
+
+    plt.tight_layout()
+    corr_ranking_path = os.path.join(correlation_dir, 'correlation_ranking.png')
+    plt.savefig(corr_ranking_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"   ✓ Correlation ranking saved to: {corr_ranking_path}")
+
+    print("\n" + "=" * 70)
+    print("EDA COMPLETE")
+    print("=" * 70)
+    print(f"All EDA outputs saved to: {eda_dir}/")
+    print("=" * 70)
+
+
+# ============================================================================
+
+
+# ============================================================================
 # DATA GENERATORS
 # ============================================================================
 
@@ -342,7 +620,7 @@ class TaskHeaderDataGenerator(tf.keras.utils.Sequence):
 
 
 # ============================================================================
-# *** NEW: BASELINE LSTM MODEL ***
+# BASELINE LSTM MODEL
 # ============================================================================
 
 def build_baseline_lstm(timesteps, n_features, hidden_size=64, dropout_rate=0.3):
@@ -419,7 +697,7 @@ def train_baseline_lstm(train_data, train_targets, test_data, test_targets, outp
     )
 
     # Print model summary
-    print("\nBaseline Model Architecture:")
+    print("\nBaseline LSTM Model Architecture:")
     model.summary()
 
     # Compile model
@@ -470,10 +748,10 @@ def train_baseline_lstm(train_data, train_targets, test_data, test_targets, outp
     # Save baseline model
     model_path = os.path.join(output_dir, 'baseline_lstm_model.keras')
     model.save(model_path)
-    print(f"✓ Baseline model saved to: {model_path}")
+    print(f"✓ Baseline LSTM model saved to: {model_path}")
 
     # Plot training curves
-    plot_baseline_training_curves(history, output_dir)
+    plot_baseline_training_curves(history, output_dir, model_type='LSTM')
 
     # Save baseline results
     baseline_results = {
@@ -490,18 +768,189 @@ def train_baseline_lstm(train_data, train_targets, test_data, test_targets, outp
     }
 
     baseline_results_file = os.path.join(output_dir, 'baseline_lstm_results.json')
-    #with open(baseline_results_file, 'w') as f:
-    #    json.dump(baseline_results, f, indent=2)
-    #print(f"✓ Baseline results saved to: {baseline_results_file}")
+    with open(baseline_results_file, 'w') as f:
+        json.dump(baseline_results, f, indent=2)
+    print(f"✓ Baseline LSTM results saved to: {baseline_results_file}")
 
     print("=" * 70)
 
     return model, history, test_mae
 
 
-def plot_baseline_training_curves(history, output_dir):
+# ============================================================================
+# *** NEW: BASELINE GRU MODEL (identical architecture to LSTM) ***
+# ============================================================================
+
+def build_baseline_gru(timesteps, n_features, hidden_size=64, dropout_rate=0.3):
     """
-    Plot training curves for baseline LSTM
+    Build baseline GRU model with exactly 4 layers total
+    Architecture IDENTICAL to LSTM baseline except using GRU layers
+
+    Architecture:
+    - Layer 1: GRU (hidden_size units, return_sequences=True)
+    - Layer 2: Dropout (dropout_rate)
+    - Layer 3: GRU (hidden_size units, return_sequences=False)
+    - Layer 4: Dense (1 unit, output layer)
+
+    Args:
+        timesteps: Input sequence length
+        n_features: Number of features
+        hidden_size: GRU hidden units
+        dropout_rate: Dropout rate
+
+    Returns:
+        Keras Sequential model
+    """
+    model = Sequential([
+        # Layer 1: First GRU layer
+        GRU(hidden_size,
+            activation='tanh',
+            return_sequences=True,
+            input_shape=(timesteps, n_features),
+            name='gru_1'),
+
+        # Layer 2: Dropout
+        Dropout(dropout_rate, name='dropout'),
+
+        # Layer 3: Second GRU layer
+        GRU(hidden_size,
+            activation='tanh',
+            return_sequences=False,
+            name='gru_2'),
+
+        # Layer 4: Output layer
+        Dense(1, name='output')
+    ])
+
+    return model
+
+
+def train_baseline_gru(train_data, train_targets, test_data, test_targets, output_dir):
+    """
+    Train the baseline GRU model once
+    Training procedure IDENTICAL to LSTM baseline
+
+    Args:
+        train_data: Training data
+        train_targets: Training targets
+        test_data: Test data
+        test_targets: Test targets
+        output_dir: Directory to save outputs
+
+    Returns:
+        Trained model, training history, test MAE
+    """
+    print("\n" + "=" * 70)
+    print("BASELINE GRU MODEL TRAINING")
+    print("=" * 70)
+
+    # Clear any existing sessions
+    tf.keras.backend.clear_session()
+
+    # Build model
+    timesteps, n_features = train_data.shape[1], train_data.shape[2]
+    model = build_baseline_gru(
+        timesteps=timesteps,
+        n_features=n_features,
+        hidden_size=BASELINE_GRU_HIDDEN_SIZE,
+        dropout_rate=BASELINE_GRU_DROPOUT_RATE
+    )
+
+    # Print model summary
+    print("\nBaseline GRU Model Architecture:")
+    model.summary()
+
+    # Compile model (identical to LSTM)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=BASELINE_GRU_LEARNING_RATE),
+        loss='mae',
+        metrics=['mae']
+    )
+
+    # Create data generators (identical to LSTM)
+    train_gen = TaskHeaderDataGenerator(
+        train_data,
+        train_targets,
+        batch_size=BASELINE_GRU_BATCH_SIZE,
+        shuffle=True
+    )
+    test_gen = TaskHeaderDataGenerator(
+        test_data,
+        test_targets,
+        batch_size=BASELINE_GRU_BATCH_SIZE,
+        shuffle=False
+    )
+
+    # Early stopping (identical to LSTM)
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=EARLY_STOPPING_PATIENCE,
+        restore_best_weights=True,
+        verbose=1
+    )
+
+    # Train
+    print("\nTraining baseline GRU...")
+    history = model.fit(
+        train_gen,
+        epochs=BASELINE_GRU_EPOCHS,
+        validation_data=test_gen,
+        callbacks=[early_stop],
+        verbose=1
+    )
+
+    # Evaluate on test set
+    predictions = model.predict(test_data, verbose=0)
+    test_mae = mean_absolute_error(test_targets, predictions.flatten())
+
+    print(f"\n✓ Baseline GRU Test MAE: {test_mae:.6f}")
+
+    # Save baseline model
+    model_path = os.path.join(output_dir, 'baseline_gru_model.keras')
+    model.save(model_path)
+    print(f"✓ Baseline GRU model saved to: {model_path}")
+
+    # Plot training curves
+    plot_baseline_training_curves(history, output_dir, model_type='GRU')
+
+    # Save baseline results
+    baseline_results = {
+        'test_mae': test_mae,
+        'hidden_size': BASELINE_GRU_HIDDEN_SIZE,
+        'dropout_rate': BASELINE_GRU_DROPOUT_RATE,
+        'learning_rate': BASELINE_GRU_LEARNING_RATE,
+        'batch_size': BASELINE_GRU_BATCH_SIZE,
+        'epochs': BASELINE_GRU_EPOCHS,
+        'final_train_loss': history.history['loss'][-1],
+        'final_val_loss': history.history['val_loss'][-1],
+        'final_train_mae': history.history['mae'][-1],
+        'final_val_mae': history.history['val_mae'][-1]
+    }
+
+    baseline_results_file = os.path.join(output_dir, 'baseline_gru_results.json')
+    with open(baseline_results_file, 'w') as f:
+        json.dump(baseline_results, f, indent=2)
+    print(f"✓ Baseline GRU results saved to: {baseline_results_file}")
+
+    print("=" * 70)
+
+    return model, history, test_mae
+
+
+# ============================================================================
+
+
+# ============================================================================
+# *** MODIFIED: plot_baseline_training_curves - now accepts model_type ***
+# ============================================================================
+def plot_baseline_training_curves(history, output_dir, model_type='LSTM'):
+    """
+    Plot training curves for baseline model (LSTM or GRU)
+
+    Args:
+        history: Training history
+        output_dir: Output directory
+        model_type: 'LSTM' or 'GRU' for labeling
     """
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -511,7 +960,7 @@ def plot_baseline_training_curves(history, output_dir):
     ax.plot(history.history['val_loss'], label='Val Loss', marker='o')
     ax.set_xlabel('Epoch')
     ax.set_ylabel('Loss (MAE)')
-    ax.set_title('Baseline LSTM - Training Loss')
+    ax.set_title(f'Baseline {model_type} - Training Loss')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -521,17 +970,17 @@ def plot_baseline_training_curves(history, output_dir):
     ax.plot(history.history['val_mae'], label='Val MAE', marker='o')
     ax.set_xlabel('Epoch')
     ax.set_ylabel('MAE')
-    ax.set_title('Baseline LSTM - MAE')
+    ax.set_title(f'Baseline {model_type} - MAE')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
-    plot_path = os.path.join(output_dir, 'baseline_lstm_training_curves.png')
+    plot_path = os.path.join(output_dir, f'baseline_{model_type.lower()}_training_curves.png')
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
 
-    print(f"✓ Baseline training curves saved to: {plot_path}")
+    print(f"✓ Baseline {model_type} training curves saved to: {plot_path}")
 
 
 # ============================================================================
@@ -874,12 +1323,12 @@ def generate_config_name(config):
 
 
 # ============================================================================
-# *** MODIFIED: train_single_configuration - Added baseline comparison ***
+# *** MODIFIED: train_single_configuration - Updated metric names ***
 # ============================================================================
 def train_single_configuration(config_idx, config, train_data, test_data, train_targets, test_targets,
-                               output_dir, baseline_mae):
+                               output_dir, baseline_lstm_mae, baseline_gru_mae):
     """
-    Train a single hyperparameter configuration and compare against baseline
+    Train a single hyperparameter configuration and compare against both baselines
 
     Args:
         config_idx: Index of this configuration
@@ -887,10 +1336,11 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         train_data, test_data: Preprocessed data
         train_targets, test_targets: Target values
         output_dir: Output directory
-        baseline_mae: Baseline LSTM MAE for comparison  # *** NEW PARAMETER ***
+        baseline_lstm_mae: Baseline LSTM MAE for comparison
+        baseline_gru_mae: Baseline GRU MAE for comparison
 
     Returns:
-        Dictionary with results including baseline comparison  # *** MODIFIED ***
+        Dictionary with results including baseline comparisons
     """
     try:
         config_name = generate_config_name(config)
@@ -923,14 +1373,23 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         print(f"  ✓ Test MAE: {test_mae:.6f}")
 
         # ============================================================================
-        # *** NEW: Baseline comparison logic ***
+        # *** MODIFIED: Baseline comparison logic with updated metric names ***
         # ============================================================================
-        mae_diff = test_mae - baseline_mae
-        better_than_baseline = test_mae < baseline_mae
+        # LSTM baseline comparison
+        mae_diff_lstm = test_mae - baseline_lstm_mae
+        better_than_lstm = test_mae < baseline_lstm_mae
 
-        print(f"  ✓ Baseline LSTM MAE: {baseline_mae:.6f}")
-        print(f"  ✓ MAE Difference: {mae_diff:+.6f}")
-        print(f"  ✓ Better than baseline: {better_than_baseline}")
+        # GRU baseline comparison
+        mae_diff_gru = test_mae - baseline_gru_mae
+        better_than_gru = test_mae < baseline_gru_mae
+
+        print(f"  ✓ Baseline LSTM MAE: {baseline_lstm_mae:.6f}")
+        print(f"  ✓ MAE Difference (vs LSTM): {mae_diff_lstm:+.6f}")
+        print(f"  ✓ Better than LSTM: {better_than_lstm}")
+
+        print(f"  ✓ Baseline GRU MAE: {baseline_gru_mae:.6f}")
+        print(f"  ✓ MAE Difference (vs GRU): {mae_diff_gru:+.6f}")
+        print(f"  ✓ Better than GRU: {better_than_gru}")
         # ============================================================================
 
         # Plot training curves
@@ -955,10 +1414,14 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
             'final_ae_loss': ae_history.history['val_loss'][-1],
             'final_header_loss': header_history.history['val_loss'][-1],
             # ============================================================================
-            # *** NEW: Added baseline comparison columns ***
-            'baseline_lstm_mae': baseline_mae,
-            'mae_diff': mae_diff,
-            'better_than_baseline': better_than_baseline,
+            # *** MODIFIED: Updated metric names for baseline comparisons ***
+            'baseline_lstm_mae': baseline_lstm_mae,
+            'mae_diff_lstm': mae_diff_lstm,
+            'better_than_LSTM': better_than_lstm,
+
+            'baseline_gru_mae': baseline_gru_mae,
+            'mae_diff_gru': mae_diff_gru,
+            'better_than_GRU': better_than_gru,
             # ============================================================================
             'status': 'success'
         }
@@ -986,10 +1449,14 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
             'config_name': config.get('config_name', 'unknown'),
             'test_mae': np.inf,
             # ============================================================================
-            # *** NEW: Include baseline columns even in failed runs ***
-            'baseline_lstm_mae': baseline_mae,
-            'mae_diff': np.inf,
-            'better_than_baseline': False,
+            # *** MODIFIED: Include both baselines in failed runs ***
+            'baseline_lstm_mae': baseline_lstm_mae,
+            'mae_diff_lstm': np.inf,
+            'better_than_LSTM': False,
+
+            'baseline_gru_mae': baseline_gru_mae,
+            'mae_diff_gru': np.inf,
+            'better_than_GRU': False,
             # ============================================================================
             'status': f'failed: {str(e)}'
         }
@@ -1005,19 +1472,19 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
 
 
 # ============================================================================
-# *** MODIFIED: run_grid_search - Added baseline training and comparison ***
+# *** MODIFIED: run_grid_search - Added GRU baseline and EDA ***
 # ============================================================================
 def run_grid_search(train_data, test_data, train_targets, test_targets):
     """
     Run comprehensive grid search over all hyperparameter combinations
-    Now includes baseline LSTM training and comparison  # *** MODIFIED ***
+    Now includes both LSTM and GRU baselines, plus EDA
 
     Args:
         train_data, test_data: Preprocessed data
         train_targets, test_targets: Target values
 
     Returns:
-        DataFrame with all results including baseline comparison  # *** MODIFIED ***
+        DataFrame with all results including baseline comparisons
     """
     # Create output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1031,15 +1498,29 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     print(f"Target variable: {VARIABLE_TO_PREDICT}")
 
     # ============================================================================
-    # *** NEW: Train baseline LSTM once before grid search ***
+    # *** NEW: Perform EDA after preprocessing and before training ***
     # ============================================================================
-    baseline_model, baseline_history, baseline_mae = train_baseline_lstm(
+    perform_eda(train_data, test_data, train_targets, test_targets, output_dir)
+    # ============================================================================
+
+    # ============================================================================
+    # *** MODIFIED: Train both LSTM and GRU baselines ***
+    # ============================================================================
+    baseline_lstm_model, baseline_lstm_history, baseline_lstm_mae = train_baseline_lstm(
         train_data, train_targets, test_data, test_targets, output_dir
     )
 
     print(f"\n✓ Baseline LSTM trained successfully!")
-    print(f"✓ Baseline Test MAE: {baseline_mae:.6f}")
-    print(f"✓ This MAE will be used for all grid search comparisons")
+    print(f"✓ Baseline LSTM Test MAE: {baseline_lstm_mae:.6f}")
+
+    baseline_gru_model, baseline_gru_history, baseline_gru_mae = train_baseline_gru(
+        train_data, train_targets, test_data, test_targets, output_dir
+    )
+
+    print(f"\n✓ Baseline GRU trained successfully!")
+    print(f"✓ Baseline GRU Test MAE: {baseline_gru_mae:.6f}")
+
+    print(f"\n✓ Both baseline models will be used for grid search comparisons")
     # ============================================================================
 
     # Generate all hyperparameter combinations
@@ -1068,23 +1549,31 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
 
     # Save grid search configuration
     config_file = os.path.join(output_dir, 'grid_search_config.json')
-    #"""with open(config_file, 'w') as f:
-    #    json.dump({
-    #        'param_grid': {k: v for k, v in param_grid.items()},
-    #        'total_combinations': len(combinations),
-    #        'num_threads': NUM_THREADS,
-    #        'target_variable': VARIABLE_TO_PREDICT,
-    #        # *** NEW: Include baseline configuration ***
-    #        'baseline_lstm': {
-    #            'hidden_size': BASELINE_LSTM_HIDDEN_SIZE,
-    #            'dropout_rate': BASELINE_DROPOUT_RATE,
-    #            'learning_rate': BASELINE_LEARNING_RATE,
-    #            'batch_size': BASELINE_BATCH_SIZE,
-    #            'epochs': BASELINE_EPOCHS,
-    #            'test_mae': baseline_mae
-    #        },
-    #        'timestamp': timestamp
-    #    }, f, indent=2)"""
+    with open(config_file, 'w') as f:
+        json.dump({
+            'param_grid': {k: v for k, v in param_grid.items()},
+            'total_combinations': len(combinations),
+            'num_threads': NUM_THREADS,
+            'target_variable': VARIABLE_TO_PREDICT,
+            # *** MODIFIED: Include both baseline configurations ***
+            'baseline_lstm': {
+                'hidden_size': BASELINE_LSTM_HIDDEN_SIZE,
+                'dropout_rate': BASELINE_DROPOUT_RATE,
+                'learning_rate': BASELINE_LEARNING_RATE,
+                'batch_size': BASELINE_BATCH_SIZE,
+                'epochs': BASELINE_EPOCHS,
+                'test_mae': baseline_lstm_mae
+            },
+            'baseline_gru': {
+                'hidden_size': BASELINE_GRU_HIDDEN_SIZE,
+                'dropout_rate': BASELINE_GRU_DROPOUT_RATE,
+                'learning_rate': BASELINE_GRU_LEARNING_RATE,
+                'batch_size': BASELINE_GRU_BATCH_SIZE,
+                'epochs': BASELINE_GRU_EPOCHS,
+                'test_mae': baseline_gru_mae
+            },
+            'timestamp': timestamp
+        }, f, indent=2)
 
     # Run grid search in parallel
     results = []
@@ -1092,10 +1581,10 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     if NUM_THREADS == 1:
         # Sequential execution
         for idx, config in enumerate(combinations, 1):
-            # *** MODIFIED: Pass baseline_mae to each configuration ***
+            # *** MODIFIED: Pass both baseline MAEs to each configuration ***
             result = train_single_configuration(
                 idx, config, train_data, test_data, train_targets, test_targets,
-                output_dir, baseline_mae  # *** NEW PARAMETER ***
+                output_dir, baseline_lstm_mae, baseline_gru_mae
             )
             results.append(result)
 
@@ -1118,7 +1607,7 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
                 executor.submit(
                     train_single_configuration,
                     idx, config, train_data, test_data, train_targets, test_targets,
-                    output_dir, baseline_mae  # *** NEW PARAMETER ***
+                    output_dir, baseline_lstm_mae, baseline_gru_mae  # *** MODIFIED: Pass both baselines ***
                 ): (idx, config)
                 for idx, config in enumerate(combinations, 1)
             }
@@ -1141,10 +1630,13 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
                         'config_idx': idx,
                         'config_name': 'failed',
                         'test_mae': np.inf,
-                        # *** NEW: Include baseline columns ***
-                        'baseline_lstm_mae': baseline_mae,
-                        'mae_diff': np.inf,
-                        'better_than_baseline': False,
+                        # *** MODIFIED: Include both baselines ***
+                        'baseline_lstm_mae': baseline_lstm_mae,
+                        'mae_diff_lstm': np.inf,
+                        'better_than_LSTM': False,
+                        'baseline_gru_mae': baseline_gru_mae,
+                        'mae_diff_gru': np.inf,
+                        'better_than_GRU': False,
                         'status': f'exception: {str(exc)}'
                     })
 
@@ -1156,7 +1648,7 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     save_results_csv(results, output_dir, final=True)
 
     # Print summary
-    print_grid_search_summary(results_df, output_dir, baseline_mae)  # *** MODIFIED: Pass baseline_mae ***
+    print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baseline_gru_mae)
 
     return results_df
 
@@ -1178,12 +1670,12 @@ def save_results_csv(results, output_dir, final=False):
 
 
 # ============================================================================
-# *** MODIFIED: print_grid_search_summary - Added baseline comparison stats ***
+# *** MODIFIED: print_grid_search_summary - Added GRU baseline comparison ***
 # ============================================================================
-def print_grid_search_summary(results_df, output_dir, baseline_mae):
+def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baseline_gru_mae):
     """
     Print summary of grid search results
-    Now includes baseline comparison statistics  # *** MODIFIED ***
+    Now includes both LSTM and GRU baseline comparison statistics
     """
     print("\n" + "=" * 70)
     print("GRID SEARCH COMPLETE")
@@ -1197,42 +1689,67 @@ def print_grid_search_summary(results_df, output_dir, baseline_mae):
     print(f"Failed runs: {len(results_df) - len(successful)}")
 
     # ============================================================================
-    # *** NEW: Baseline comparison statistics ***
+    # *** MODIFIED: Baseline comparison statistics for both baselines ***
     # ============================================================================
     if len(successful) > 0:
         print(f"\n{'=' * 70}")
         print("BASELINE COMPARISON SUMMARY")
         print(f"{'=' * 70}")
-        print(f"Baseline LSTM Test MAE: {baseline_mae:.6f}")
 
-        num_better = successful['better_than_baseline'].sum()
-        num_worse = len(successful) - num_better
-        pct_better = (num_better / len(successful)) * 100
+        # LSTM Baseline comparison
+        print(f"\n--- LSTM Baseline ---")
+        print(f"Baseline LSTM Test MAE: {baseline_lstm_mae:.6f}")
 
-        print(f"\nConfigurations better than baseline: {num_better}/{len(successful)} ({pct_better:.1f}%)")
-        print(f"Configurations worse than baseline: {num_worse}/{len(successful)} ({100 - pct_better:.1f}%)")
+        num_better_lstm = successful['better_than_LSTM'].sum()
+        num_worse_lstm = len(successful) - num_better_lstm
+        pct_better_lstm = (num_better_lstm / len(successful)) * 100
 
-        if num_better > 0:
-            best_improvement = successful['mae_diff'].min()
-            print(f"Best improvement over baseline: {best_improvement:.6f}")
+        print(f"Configurations better than LSTM: {num_better_lstm}/{len(successful)} ({pct_better_lstm:.1f}%)")
+        print(f"Configurations worse than LSTM: {num_worse_lstm}/{len(successful)} ({100 - pct_better_lstm:.1f}%)")
 
-        if num_worse > 0:
-            worst_degradation = successful['mae_diff'].max()
-            print(f"Worst degradation vs baseline: {worst_degradation:+.6f}")
+        if num_better_lstm > 0:
+            best_improvement_lstm = successful['mae_diff_lstm'].min()
+            print(f"Best improvement over LSTM: {best_improvement_lstm:.6f}")
+
+        if num_worse_lstm > 0:
+            worst_degradation_lstm = successful['mae_diff_lstm'].max()
+            print(f"Worst degradation vs LSTM: {worst_degradation_lstm:+.6f}")
+
+        # GRU Baseline comparison
+        print(f"\n--- GRU Baseline ---")
+        print(f"Baseline GRU Test MAE: {baseline_gru_mae:.6f}")
+
+        num_better_gru = successful['better_than_GRU'].sum()
+        num_worse_gru = len(successful) - num_better_gru
+        pct_better_gru = (num_better_gru / len(successful)) * 100
+
+        print(f"Configurations better than GRU: {num_better_gru}/{len(successful)} ({pct_better_gru:.1f}%)")
+        print(f"Configurations worse than GRU: {num_worse_gru}/{len(successful)} ({100 - pct_better_gru:.1f}%)")
+
+        if num_better_gru > 0:
+            best_improvement_gru = successful['mae_diff_gru'].min()
+            print(f"Best improvement over GRU: {best_improvement_gru:.6f}")
+
+        if num_worse_gru > 0:
+            worst_degradation_gru = successful['mae_diff_gru'].max()
+            print(f"Worst degradation vs GRU: {worst_degradation_gru:+.6f}")
     # ============================================================================
 
     if len(successful) > 0:
         print(f"\n{'=' * 70}")
         print("TOP 10 CONFIGURATIONS (by Test MAE)")
         print(f"{'=' * 70}")
-        # *** MODIFIED: Added baseline comparison columns to display ***
-        print(f"{'Rank':<6} {'MAE':<12} {'vs Baseline':<12} {'Better?':<10} {'Config Name':<40}")
-        print("-" * 80)
+        # *** MODIFIED: Display both baseline comparisons ***
+        print(
+            f"{'Rank':<6} {'MAE':<12} {'vs LSTM':<12} {'Better?':<10} {'vs GRU':<12} {'Better?':<10} {'Config Name':<40}")
+        print("-" * 100)
 
         for rank, (idx, row) in enumerate(successful.head(10).iterrows(), 1):
-            better_symbol = '✓' if row['better_than_baseline'] else '✗'
+            better_lstm_symbol = '✓' if row['better_than_LSTM'] else '✗'
+            better_gru_symbol = '✓' if row['better_than_GRU'] else '✗'
             print(
-                f"{rank:<6} {row['test_mae']:<12.6f} {row['mae_diff']:+<12.6f} {better_symbol:<10} {row['config_name']:<40}")
+                f"{rank:<6} {row['test_mae']:<12.6f} {row['mae_diff_lstm']:+<12.6f} {better_lstm_symbol:<10} "
+                f"{row['mae_diff_gru']:+<12.6f} {better_gru_symbol:<10} {row['config_name']:<40}")
 
         print(f"\n{'=' * 70}")
         print("BEST CONFIGURATION DETAILS")
@@ -1241,10 +1758,14 @@ def print_grid_search_summary(results_df, output_dir, baseline_mae):
         best = successful.iloc[0]
         print(f"Configuration Name: {best['config_name']}")
         print(f"Test MAE: {best['test_mae']:.6f}")
-        # *** NEW: Display baseline comparison for best config ***
-        print(f"Baseline LSTM MAE: {best['baseline_lstm_mae']:.6f}")
-        print(f"MAE Difference: {best['mae_diff']:+.6f}")
-        print(f"Better than baseline: {best['better_than_baseline']}")
+        # *** MODIFIED: Display both baseline comparisons for best config ***
+        print(f"\nBaseline Comparisons:")
+        print(f"  LSTM Baseline MAE: {best['baseline_lstm_mae']:.6f}")
+        print(f"  MAE Difference (vs LSTM): {best['mae_diff_lstm']:+.6f}")
+        print(f"  Better than LSTM: {best['better_than_LSTM']}")
+        print(f"  GRU Baseline MAE: {best['baseline_gru_mae']:.6f}")
+        print(f"  MAE Difference (vs GRU): {best['mae_diff_gru']:+.6f}")
+        print(f"  Better than GRU: {best['better_than_GRU']}")
 
         print(f"\nHyperparameters:")
         print(f"  Autoencoder layers: {best['n_ae_layers']}")
@@ -1261,13 +1782,13 @@ def print_grid_search_summary(results_df, output_dir, baseline_mae):
 
         # Save best config to file
         best_config_file = os.path.join(output_dir, 'best_configuration.json')
-        #with open(best_config_file, 'w') as f:
-        #    json.dump(best.to_dict(), f, indent=2)
+        with open(best_config_file, 'w') as f:
+            json.dump(best.to_dict(), f, indent=2)
 
         print(f"\n✓ Best configuration saved to: {best_config_file}")
 
         # Create visualization of results
-        create_results_visualizations(successful, output_dir, baseline_mae)  # *** MODIFIED: Pass baseline_mae ***
+        create_results_visualizations(successful, output_dir, baseline_lstm_mae, baseline_gru_mae)
 
     print("\n" + "=" * 70)
     print("SAVED FILES SUMMARY")
@@ -1276,10 +1797,24 @@ def print_grid_search_summary(results_df, output_dir, baseline_mae):
     print(f"     📊 grid_search_results_final.csv - All configuration results")
     print(f"     📊 grid_search_config.json - Grid search parameters")
     print(f"     📊 best_configuration.json - Best performing config details")
-    # *** NEW: Baseline files ***
+    # *** MODIFIED: Include both baseline files ***
     print(f"     📊 baseline_lstm_results.json - Baseline LSTM results")
-    print(f"     📊 baseline_lstm_training_curves.png - Baseline training plot")
-    print(f"     🤖 baseline_lstm_model.keras - Trained baseline model")
+    print(f"     📊 baseline_lstm_training_curves.png - Baseline LSTM training plot")
+    print(f"     🤖 baseline_lstm_model.keras - Trained baseline LSTM model")
+    print(f"     📊 baseline_gru_results.json - Baseline GRU results")
+    print(f"     📊 baseline_gru_training_curves.png - Baseline GRU training plot")
+    print(f"     🤖 baseline_gru_model.keras - Trained baseline GRU model")
+    # *** NEW: EDA files ***
+    print(f"     📁 eda/ - Exploratory Data Analysis outputs")
+    print(f"        📊 summary_statistics.png - Dataset statistics table")
+    print(f"        📊 feature_distributions.png - Feature distribution plots")
+    print(f"        📊 target_train_test_comparison.png - Target variable analysis")
+    print(f"        📁 correlations/ - Correlation analysis")
+    print(f"           📊 correlation_heatmap.png - Feature correlation matrix")
+    print(f"           📊 correlation_ranking.png - Correlation strength ranking")
+    print(f"        📁 scatter_plots/ - Feature vs target scatter plots")
+    print(f"           📊 all_features_vs_target.png - Combined scatter plot grid")
+    print(f"           📊 *_vs_target.png - Individual scatter plots")
     print(f"     📊 results_analysis.png - Performance visualizations")
     print(f"     🤖 autoencoder_*.h5 - Trained autoencoder models")
     print(f"     🤖 task_header_*.h5 - Trained task header models")
@@ -1291,21 +1826,22 @@ def print_grid_search_summary(results_df, output_dir, baseline_mae):
 
 
 # ============================================================================
-# *** MODIFIED: create_results_visualizations - Added baseline comparison plots ***
+# *** MODIFIED: create_results_visualizations - Added GRU baseline plots ***
 # ============================================================================
-def create_results_visualizations(results_df, output_dir, baseline_mae):
+def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, baseline_gru_mae):
     """
     Create visualizations analyzing grid search results
-    Now includes baseline comparison plots  # *** MODIFIED ***
+    Now includes both LSTM and GRU baseline comparison plots
     """
-    # *** MODIFIED: Changed to 3x3 grid to accommodate new baseline plots ***
-    fig = plt.figure(figsize=(18, 12))
+    # *** MODIFIED: Changed to 4x3 grid to accommodate GRU baseline plots ***
+    fig = plt.figure(figsize=(18, 16))
 
     # 1. MAE distribution
-    ax1 = plt.subplot(3, 3, 1)
+    ax1 = plt.subplot(4, 3, 1)
     ax1.hist(results_df['test_mae'], bins=30, edgecolor='black', alpha=0.7)
-    # *** NEW: Add baseline reference line ***
-    ax1.axvline(baseline_mae, color='red', linestyle='--', linewidth=2, label='Baseline LSTM')
+    # *** MODIFIED: Add both baseline reference lines ***
+    ax1.axvline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='Baseline LSTM')
+    ax1.axvline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='Baseline GRU')
     ax1.set_xlabel('Test MAE')
     ax1.set_ylabel('Frequency')
     ax1.set_title('Distribution of Test MAE Across Configurations')
@@ -1313,22 +1849,24 @@ def create_results_visualizations(results_df, output_dir, baseline_mae):
     ax1.grid(True, alpha=0.3)
 
     # 2. MAE by unit type
-    ax2 = plt.subplot(3, 3, 2)
+    ax2 = plt.subplot(4, 3, 2)
     unit_types = results_df.groupby('unit_type')['test_mae'].apply(list)
     ax2.boxplot(unit_types.values, labels=unit_types.index)
-    # *** NEW: Add baseline reference line ***
-    ax2.axhline(baseline_mae, color='red', linestyle='--', linewidth=2, label='Baseline')
+    # *** MODIFIED: Add both baseline reference lines ***
+    ax2.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
+    ax2.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax2.set_ylabel('Test MAE')
     ax2.set_title('MAE by Unit Type')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
     # 3. MAE by number of autoencoder layers
-    ax3 = plt.subplot(3, 3, 3)
+    ax3 = plt.subplot(4, 3, 3)
     ae_layers = results_df.groupby('n_ae_layers')['test_mae'].apply(list)
     ax3.boxplot(ae_layers.values, labels=ae_layers.index)
-    # *** NEW: Add baseline reference line ***
-    ax3.axhline(baseline_mae, color='red', linestyle='--', linewidth=2, label='Baseline')
+    # *** MODIFIED: Add both baseline reference lines ***
+    ax3.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
+    ax3.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax3.set_xlabel('Number of Autoencoder Layers')
     ax3.set_ylabel('Test MAE')
     ax3.set_title('MAE by Autoencoder Depth')
@@ -1336,12 +1874,13 @@ def create_results_visualizations(results_df, output_dir, baseline_mae):
     ax3.grid(True, alpha=0.3)
 
     # 4. MAE by masking percentage
-    ax4 = plt.subplot(3, 3, 4)
+    ax4 = plt.subplot(4, 3, 4)
     mask_pcts = results_df.groupby('mask_percent')['test_mae'].apply(list)
     labels = [f"{int(k * 100)}%" for k in mask_pcts.index]
     ax4.boxplot(mask_pcts.values, labels=labels)
-    # *** NEW: Add baseline reference line ***
-    ax4.axhline(baseline_mae, color='red', linestyle='--', linewidth=2, label='Baseline')
+    # *** MODIFIED: Add both baseline reference lines ***
+    ax4.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
+    ax4.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax4.set_xlabel('Masking Percentage')
     ax4.set_ylabel('Test MAE')
     ax4.set_title('MAE by Masking Percentage')
@@ -1349,68 +1888,107 @@ def create_results_visualizations(results_df, output_dir, baseline_mae):
     ax4.grid(True, alpha=0.3)
 
     # 5. MAE by activation function
-    ax5 = plt.subplot(3, 3, 5)
+    ax5 = plt.subplot(4, 3, 5)
     activations = results_df.groupby('activation')['test_mae'].apply(list)
     ax5.boxplot(activations.values, labels=activations.index)
-    # *** NEW: Add baseline reference line ***
-    ax5.axhline(baseline_mae, color='red', linestyle='--', linewidth=2, label='Baseline')
+    # *** MODIFIED: Add both baseline reference lines ***
+    ax5.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
+    ax5.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax5.set_ylabel('Test MAE')
     ax5.set_title('MAE by Activation Function')
     ax5.legend()
     ax5.grid(True, alpha=0.3)
 
     # 6. Top configurations
-    ax6 = plt.subplot(3, 3, 6)
+    ax6 = plt.subplot(4, 3, 6)
     top_10 = results_df.head(10)
     y_pos = np.arange(len(top_10))
-    colors = ['green' if better else 'red' for better in top_10['better_than_baseline']]
+    # *** MODIFIED: Color based on LSTM baseline comparison ***
+    colors = ['green' if better else 'red' for better in top_10['better_than_LSTM']]
     ax6.barh(y_pos, top_10['test_mae'].values, color=colors, alpha=0.6)
-    # *** NEW: Add baseline reference line ***
-    ax6.axvline(baseline_mae, color='red', linestyle='--', linewidth=2, label='Baseline')
+    # *** MODIFIED: Add both baseline reference lines ***
+    ax6.axvline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
+    ax6.axvline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax6.set_yticks(y_pos)
     ax6.set_yticklabels([f"Config {i + 1}" for i in range(len(top_10))])
     ax6.set_xlabel('Test MAE')
-    ax6.set_title('Top 10 Configurations (Green=Better, Red=Worse)')
+    ax6.set_title('Top 10 Configurations (Green=Better than LSTM)')
     ax6.invert_yaxis()
     ax6.legend()
     ax6.grid(True, alpha=0.3, axis='x')
 
     # ============================================================================
-    # *** NEW: Additional baseline comparison plots ***
+    # *** MODIFIED: LSTM Baseline comparison plots ***
     # ============================================================================
 
-    # 7. MAE Difference from Baseline
-    ax7 = plt.subplot(3, 3, 7)
-    ax7.hist(results_df['mae_diff'], bins=30, edgecolor='black', alpha=0.7)
-    ax7.axvline(0, color='red', linestyle='--', linewidth=2, label='Baseline (0)')
-    ax7.set_xlabel('MAE Difference from Baseline')
+    # 7. MAE Difference from LSTM Baseline
+    ax7 = plt.subplot(4, 3, 7)
+    ax7.hist(results_df['mae_diff_lstm'], bins=30, edgecolor='black', alpha=0.7)
+    ax7.axvline(0, color='red', linestyle='--', linewidth=2, label='LSTM Baseline (0)')
+    ax7.set_xlabel('MAE Difference from LSTM Baseline')
     ax7.set_ylabel('Frequency')
-    ax7.set_title('Distribution of MAE Difference')
+    ax7.set_title('Distribution of MAE Difference (vs LSTM)')
     ax7.legend()
     ax7.grid(True, alpha=0.3)
 
-    # 8. Better vs Worse than Baseline
-    ax8 = plt.subplot(3, 3, 8)
-    better_counts = results_df['better_than_baseline'].value_counts()
+    # 8. Better vs Worse than LSTM Baseline
+    ax8 = plt.subplot(4, 3, 8)
+    better_counts_lstm = results_df['better_than_LSTM'].value_counts()
     colors_pie = ['green', 'red']
-    labels_pie = [f'Better ({better_counts.get(True, 0)})',
-                  f'Worse ({better_counts.get(False, 0)})']
-    ax8.pie([better_counts.get(True, 0), better_counts.get(False, 0)],
+    labels_pie = [f'Better ({better_counts_lstm.get(True, 0)})',
+                  f'Worse ({better_counts_lstm.get(False, 0)})']
+    ax8.pie([better_counts_lstm.get(True, 0), better_counts_lstm.get(False, 0)],
             labels=labels_pie, colors=colors_pie, autopct='%1.1f%%', startangle=90)
-    ax8.set_title('Configurations vs Baseline')
+    ax8.set_title('Configurations vs LSTM Baseline')
 
-    # 9. Scatter: MAE vs MAE Difference
-    ax9 = plt.subplot(3, 3, 9)
-    colors_scatter = ['green' if better else 'red'
-                      for better in results_df['better_than_baseline']]
-    ax9.scatter(results_df['test_mae'], results_df['mae_diff'],
-                c=colors_scatter, alpha=0.6)
+    # 9. Scatter: MAE vs MAE Difference (LSTM)
+    ax9 = plt.subplot(4, 3, 9)
+    colors_scatter_lstm = ['green' if better else 'red'
+                           for better in results_df['better_than_LSTM']]
+    ax9.scatter(results_df['test_mae'], results_df['mae_diff_lstm'],
+                c=colors_scatter_lstm, alpha=0.6)
     ax9.axhline(0, color='black', linestyle='--', linewidth=1)
-    ax9.axvline(baseline_mae, color='red', linestyle='--', linewidth=1)
+    ax9.axvline(baseline_lstm_mae, color='red', linestyle='--', linewidth=1)
     ax9.set_xlabel('Test MAE')
-    ax9.set_ylabel('MAE Difference from Baseline')
-    ax9.set_title('MAE vs Baseline Difference (Green=Better)')
+    ax9.set_ylabel('MAE Difference from LSTM Baseline')
+    ax9.set_title('MAE vs LSTM Baseline Difference')
     ax9.grid(True, alpha=0.3)
+
+    # ============================================================================
+    # *** NEW: GRU Baseline comparison plots ***
+    # ============================================================================
+
+    # 10. MAE Difference from GRU Baseline
+    ax10 = plt.subplot(4, 3, 10)
+    ax10.hist(results_df['mae_diff_gru'], bins=30, edgecolor='black', alpha=0.7)
+    ax10.axvline(0, color='blue', linestyle='--', linewidth=2, label='GRU Baseline (0)')
+    ax10.set_xlabel('MAE Difference from GRU Baseline')
+    ax10.set_ylabel('Frequency')
+    ax10.set_title('Distribution of MAE Difference (vs GRU)')
+    ax10.legend()
+    ax10.grid(True, alpha=0.3)
+
+    # 11. Better vs Worse than GRU Baseline
+    ax11 = plt.subplot(4, 3, 11)
+    better_counts_gru = results_df['better_than_GRU'].value_counts()
+    labels_pie_gru = [f'Better ({better_counts_gru.get(True, 0)})',
+                      f'Worse ({better_counts_gru.get(False, 0)})']
+    ax11.pie([better_counts_gru.get(True, 0), better_counts_gru.get(False, 0)],
+             labels=labels_pie_gru, colors=colors_pie, autopct='%1.1f%%', startangle=90)
+    ax11.set_title('Configurations vs GRU Baseline')
+
+    # 12. Scatter: MAE vs MAE Difference (GRU)
+    ax12 = plt.subplot(4, 3, 12)
+    colors_scatter_gru = ['green' if better else 'red'
+                          for better in results_df['better_than_GRU']]
+    ax12.scatter(results_df['test_mae'], results_df['mae_diff_gru'],
+                 c=colors_scatter_gru, alpha=0.6)
+    ax12.axhline(0, color='black', linestyle='--', linewidth=1)
+    ax12.axvline(baseline_gru_mae, color='blue', linestyle='--', linewidth=1)
+    ax12.set_xlabel('Test MAE')
+    ax12.set_ylabel('MAE Difference from GRU Baseline')
+    ax12.set_title('MAE vs GRU Baseline Difference')
+    ax12.grid(True, alpha=0.3)
     # ============================================================================
 
     plt.tight_layout()
@@ -1435,10 +2013,10 @@ def main():
     print("=" * 70)
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Step 1: Preprocess data once
+    # Step 1: Preprocess data once (EDA will be performed inside run_grid_search)
     train_data, test_data, train_targets, test_targets = preprocess_data_once()
 
-    # Step 2: Run grid search (now includes baseline training and comparison)
+    # Step 2: Run grid search (now includes EDA, LSTM baseline, and GRU baseline)
     results_df = run_grid_search(train_data, test_data, train_targets, test_targets)
 
     print(f"\nEnd time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
