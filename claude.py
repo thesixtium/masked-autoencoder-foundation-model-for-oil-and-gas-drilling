@@ -4,7 +4,7 @@ import numpy as np
 import random
 import tensorflow as tf
 from tensorflow.keras import layers, models
-from keras.layers import LSTM, GRU, RepeatVector, TimeDistributed, Dense, Dropout
+from keras.layers import RNN, LSTM, GRU, RepeatVector, TimeDistributed, Dense, Dropout
 from keras.models import Sequential, Model
 from keras import Input
 from sklearn.model_selection import train_test_split
@@ -39,11 +39,30 @@ import seaborn as sns
 VARIABLE_TO_PREDICT = 'Total Mud Volume (barrels)'  # Column name to predict
 
 # Hyperparameter grid search space
-AUTOENCODER_LAYER_COUNTS = [2]  # Number of encoder/decoder layers
+AUTOENCODER_LAYER_COUNTS = [2]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
+LATENT_SPACE_PERCENTAGE = [0.25, 0.75]  # Percentage of input features for latent space width
 TASK_HEADER_LAYER_COUNTS = [2]  # Number of layers in task header
+UNIT_TYPES = ['LSTM']  # RNN cell types
+MASKING_PERCENTAGES = [0.1]  # Percentage of data to mask during pretraining
+
+"""
+AUTOENCODER_LAYER_COUNTS = [1, 2, 3]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
+
+LATENT_SPACE_PERCENTAGE = [0.25, 0.5, 0.75]  # Percentage of input features for latent space width
+
+TASK_HEADER_LAYER_COUNTS = [1, 2, 3]  # Number of layers in task header
+# https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
+
 UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
-MASKING_PERCENTAGES = [0.2, 0.8]  # Percentage of data to mask during pretraining
-ACTIVATION_FUNCTIONS = ['tanh']  # Activation functions
+# https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
+
+MASKING_PERCENTAGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # Percentage of data to mask during pretraining
+# https://arxiv.org/pdf/2111.06377
+"""
+
+ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
+# https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
+
 LOSS_FUNCTIONS = ['mae']  # Loss functions for both stages
 OPTIMIZERS = ['adam']  # Optimizers
 LEARNING_RATES = [0.001]  # Learning rates
@@ -75,7 +94,7 @@ BASELINE_GRU_EPOCHS = 15  # Number of epochs for baseline training
 EARLY_STOPPING_PATIENCE = 5
 
 # Data subset (for faster testing, set to 1.0 for full data)
-SUBSET_PERCENT = 0.10
+SUBSET_PERCENT = 0.05
 
 # Print versions
 print(f"TensorFlow: {tf.__version__}")
@@ -768,8 +787,8 @@ def train_baseline_lstm(train_data, train_targets, test_data, test_targets, outp
     }
 
     baseline_results_file = os.path.join(output_dir, 'baseline_lstm_results.json')
-    #with open(baseline_results_file, 'w') as f:
-    #    json.dump(baseline_results, f, indent=2)
+    with open(baseline_results_file, 'w') as f:
+        json.dump(baseline_results, f, indent=2)
     print(f"✓ Baseline LSTM results saved to: {baseline_results_file}")
 
     print("=" * 70)
@@ -928,8 +947,8 @@ def train_baseline_gru(train_data, train_targets, test_data, test_targets, outpu
     }
 
     baseline_results_file = os.path.join(output_dir, 'baseline_gru_results.json')
-   # with open(baseline_results_file, 'w') as f:
-   #     json.dump(baseline_results, f, indent=2)
+    with open(baseline_results_file, 'w') as f:
+        json.dump(baseline_results, f, indent=2)
     print(f"✓ Baseline GRU results saved to: {baseline_results_file}")
 
     print("=" * 70)
@@ -987,115 +1006,184 @@ def plot_baseline_training_curves(history, output_dir, model_type='LSTM'):
 
 
 # ============================================================================
-# MODEL BUILDING FUNCTIONS
+# *** MODIFIED: MODEL BUILDING FUNCTIONS - TRUE SYMMETRIC AUTOENCODER ***
 # ============================================================================
 
-def build_autoencoder(n_layers, unit_type, activation, timesteps, n_features, units_per_layer=None):
+def compute_layer_widths(input_width, latent_width, n_layers):
     """
-    Build autoencoder model with configurable architecture
+    Compute symmetric layer widths for autoencoder
 
     Args:
-        n_layers: Number of encoder/decoder layer pairs
-        unit_type: 'LSTM' or 'GRU'
-        activation: Activation function
-        timesteps: Input sequence length
-        n_features: Number of features
-        units_per_layer: List of units for each layer (if None, uses default scaling)
+        input_width: Number of input features
+        latent_width: Number of latent space features
+        n_layers: Number of encoder layers (total RNN layers = 2 * n_layers)
 
     Returns:
-        Keras Sequential model
+        List of layer widths (encoder + decoder, symmetric around latent space)
+
+    Example for input_width=9, latent_width=2, n_layers=3:
+        Returns: [9, 6, 2, 2, 6, 9]
     """
-    if units_per_layer is None:
-        # Default: exponentially decreasing units
-        base_units = 128
-        units_per_layer = [base_units // (2 ** i) for i in range(n_layers)]
+    if n_layers == 1:
+        # Special case: just latent layer twice
+        return [latent_width, latent_width]
+
+    # Generate encoder widths (linearly decreasing from input to latent)
+    encoder_widths = np.linspace(input_width, latent_width, n_layers + 1)
+    encoder_widths = np.round(encoder_widths).astype(int)
+
+    # Remove first element (input width) and last element (latent width)
+    # Then add latent width twice at the center
+    encoder_widths = list(encoder_widths[1:-1])
+
+    # Create symmetric structure: encoder + latent (twice) + decoder
+    latent_pair = [latent_width, latent_width]
+    decoder_widths = list(reversed(encoder_widths))
+
+    all_widths = encoder_widths + latent_pair + decoder_widths
+
+    return all_widths
+
+
+def build_autoencoder(n_layers, unit_type, activation, timesteps, n_features, latent_percent):
+    """
+    Build symmetric autoencoder model with proper encoder-decoder structure
+
+    Architecture:
+    - Encoder: RNN layers with widths decreasing from input_width to latent_width
+    - Latent: Two consecutive RNN layers with latent_width
+    - Decoder: RNN layers with widths increasing from latent_width to input_width
+    - Output: TimeDistributed Dense layer to reconstruct input
+
+    Args:
+        n_layers: Number of encoder layers (total RNN layers = 2 * n_layers)
+        unit_type: 'RNN', 'LSTM', or 'GRU'
+        activation: Activation function
+        timesteps: Input sequence length
+        n_features: Number of input features
+        latent_percent: Percentage of input features for latent space (0.0-1.0)
+
+    Returns:
+        Keras Model with symmetric autoencoder architecture
+    """
+    # Compute latent width
+    latent_width = max(1, round(n_features * latent_percent))
+
+    # Compute all layer widths
+    layer_widths = compute_layer_widths(n_features, latent_width, n_layers)
 
     # Select RNN layer type
-    RNN_Layer = LSTM if unit_type == 'LSTM' else GRU
+    if unit_type == 'LSTM':
+        RNN_Layer = LSTM
+    elif unit_type == 'GRU':
+        RNN_Layer = GRU
+    else:
+        RNN_Layer = layers.SimpleRNN
 
+    # Build model
     model = Sequential()
 
-    # Encoder layers
-    for i, units in enumerate(units_per_layer):
-        return_sequences = (i < n_layers - 1)  # Last encoder layer doesn't return sequences
-
+    # Add all RNN layers
+    for i, width in enumerate(layer_widths):
         if i == 0:
-            model.add(RNN_Layer(units, activation=activation,
-                                input_shape=(timesteps, n_features),
-                                return_sequences=return_sequences))
+            # First layer needs input shape
+            model.add(RNN_Layer(
+                width,
+                activation=activation,
+                return_sequences=True,
+                input_shape=(timesteps, n_features),
+                name=f'{unit_type.lower()}_{i + 1}'
+            ))
         else:
-            model.add(RNN_Layer(units, activation=activation,
-                                return_sequences=return_sequences))
+            # All subsequent layers
+            model.add(RNN_Layer(
+                width,
+                activation=activation,
+                return_sequences=True,
+                name=f'{unit_type.lower()}_{i + 1}'
+            ))
 
-    # Bottleneck: Repeat vector to expand back to sequence
-    model.add(RepeatVector(timesteps))
-
-    # Decoder layers (mirror of encoder)
-    for i, units in enumerate(reversed(units_per_layer)):
-        model.add(RNN_Layer(units, activation=activation, return_sequences=True))
-
-    # Output layer
-    model.add(TimeDistributed(Dense(n_features)))
+    # Output layer: reconstruct input
+    model.add(TimeDistributed(Dense(n_features), name='output'))
 
     return model
 
 
-def build_task_header(encoder_model, n_layers, unit_type, activation, units_per_layer=None):
+def build_task_header(encoder_model, n_layers, unit_type, activation):
     """
     Build task header network on top of frozen encoder
 
-    FIXED: Properly handles 2D output from encoder's last layer
+    Extracts encoder layers (first half of autoencoder), freezes them,
+    and adds new trainable task-specific layers
 
     Args:
         encoder_model: Trained autoencoder model
         n_layers: Number of layers in task header
-        unit_type: 'LSTM' or 'GRU'
+        unit_type: 'RNN', 'LSTM', or 'GRU'
         activation: Activation function
-        units_per_layer: List of units for each layer (if None, uses default)
 
     Returns:
         Keras Model with frozen encoder + trainable task header
     """
-    # Extract encoder layers (everything before RepeatVector)
+    # Determine encoder cutoff point (halfway through RNN layers)
+    total_rnn_layers = sum(1 for layer in encoder_model.layers
+                           if isinstance(layer, (LSTM, GRU, layers.SimpleRNN)))
+    encoder_layer_count = total_rnn_layers // 2
+
+    # Extract encoder layers
     encoder_layers = []
+    rnn_count = 0
     for layer in encoder_model.layers:
-        if isinstance(layer, RepeatVector):
-            break
-        encoder_layers.append(layer)
+        if isinstance(layer, (LSTM, GRU, layers.SimpleRNN)):
+            encoder_layers.append(layer)
+            rnn_count += 1
+            if rnn_count >= encoder_layer_count:
+                break
 
     # Build encoder part with frozen weights
     inputs = Input(shape=encoder_model.input_shape[1:])
     x = inputs
+
     for i, layer in enumerate(encoder_layers):
         # Create new layer with same config and weights
         layer_config = layer.get_config()
-        # Give unique name to avoid conflicts
         layer_config['name'] = f"frozen_encoder_{layer_config['name']}_{i}"
+
+        # For the last encoder layer, we need to NOT return sequences
+        # so we get a single vector output for the task header
+        if i == len(encoder_layers) - 1:
+            layer_config['return_sequences'] = False
+
         new_layer = type(layer).from_config(layer_config)
         new_layer.build(x.shape)
         new_layer.set_weights(layer.get_weights())
         new_layer.trainable = False  # Freeze encoder
         x = new_layer(x)
 
-    # FIX: If the encoder output is 2D (from last LSTM/GRU without return_sequences),
-    # we need to expand it back to 3D for the task header RNN layers
-    # Check the shape of x - if it's 2D, expand to 3D
+    # If the output is 2D (which it should be after last encoder layer),
+    # expand to 3D for task header RNN layers
     if len(x.shape) == 2:
-        # Expand dims to make it (batch, 1, features) so RNN layers can process it
         x = tf.expand_dims(x, axis=1)
 
     # Add task header layers
-    if units_per_layer is None:
-        units_per_layer = [64 // (2 ** i) for i in range(n_layers)]
+    if unit_type == 'LSTM':
+        RNN_Layer = LSTM
+    elif unit_type == 'GRU':
+        RNN_Layer = GRU
+    else:
+        RNN_Layer = layers.SimpleRNN
 
-    RNN_Layer = LSTM if unit_type == 'LSTM' else GRU
+    # Task header layer widths (decreasing)
+    base_units = 64
+    units_per_layer = [base_units // (2 ** i) for i in range(n_layers)]
 
     for i, units in enumerate(units_per_layer):
         return_sequences = (i < n_layers - 1)  # Last layer outputs single vector
-        x = RNN_Layer(units, activation=activation, return_sequences=return_sequences)(x)
+        x = RNN_Layer(units, activation=activation, return_sequences=return_sequences,
+                      name=f'task_header_{unit_type.lower()}_{i + 1}')(x)
 
     # Final prediction layer (single continuous output)
-    outputs = Dense(1)(x)
+    outputs = Dense(1, name='task_output')(x)
 
     model = Model(inputs=inputs, outputs=outputs)
 
@@ -1143,7 +1231,8 @@ def train_autoencoder(config, train_data, test_data, output_dir):
         unit_type=config['unit_type'],
         activation=config['activation'],
         timesteps=timesteps,
-        n_features=n_features
+        n_features=n_features,
+        latent_percent=config['latent_percent']
     )
 
     # Compile model
@@ -1171,11 +1260,6 @@ def train_autoencoder(config, train_data, test_data, output_dir):
         callbacks=[early_stop],
         verbose=0
     )
-
-    # Save autoencoder
-    model_filename = f"autoencoder_{config['config_name']}.h5"
-    model_path = os.path.join(output_dir, model_filename)
-    # model.save(model_path)
 
     return model, history
 
@@ -1252,11 +1336,6 @@ def train_task_header(config, encoder_model, train_data, train_targets, test_dat
     predictions = model.predict(test_data, verbose=0)
     test_mae = mean_absolute_error(test_targets, predictions.flatten())
 
-    # Save task header
-    model_filename = f"task_header_{config['config_name']}.keras"
-    model_path = os.path.join(output_dir, model_filename)
-    # model.save(model_path)
-
     return model, history, test_mae
 
 
@@ -1298,7 +1377,6 @@ def plot_training_curves(ae_history, header_history, config, output_dir):
 
     plot_filename = f"training_curves_{config['config_name']}.png"
     plot_path = os.path.join(output_dir, plot_filename)
-    # plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
 
 
@@ -1310,6 +1388,7 @@ def generate_config_name(config):
     """Generate descriptive filename from config"""
     name_parts = [
         f"ae{config['n_ae_layers']}",
+        f"lat{int(config['latent_percent'] * 100)}",
         f"hd{config['n_header_layers']}",
         config['unit_type'].lower(),
         f"m{int(config['mask_percent'] * 100)}",
@@ -1322,9 +1401,6 @@ def generate_config_name(config):
     return "_".join(name_parts)
 
 
-# ============================================================================
-# *** MODIFIED: train_single_configuration - Updated metric names ***
-# ============================================================================
 def train_single_configuration(config_idx, config, train_data, test_data, train_targets, test_targets,
                                output_dir, baseline_lstm_mae, baseline_gru_mae):
     """
@@ -1350,6 +1426,7 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         print(f"[Config {config_idx}] {config_name}")
         print(f"{'=' * 70}")
         print(f"  Autoencoder layers: {config['n_ae_layers']}")
+        print(f"  Latent space %: {config['latent_percent'] * 100:.0f}%")
         print(f"  Task header layers: {config['n_header_layers']}")
         print(f"  Unit type: {config['unit_type']}")
         print(f"  Masking: {config['mask_percent'] * 100:.0f}%")
@@ -1372,14 +1449,10 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         print(f"  ✓ Task header trained")
         print(f"  ✓ Test MAE: {test_mae:.6f}")
 
-        # ============================================================================
-        # *** MODIFIED: Baseline comparison logic with updated metric names ***
-        # ============================================================================
-        # LSTM baseline comparison
+        # Baseline comparison
         mae_diff_lstm = test_mae - baseline_lstm_mae
         better_than_lstm = test_mae < baseline_lstm_mae
 
-        # GRU baseline comparison
         mae_diff_gru = test_mae - baseline_gru_mae
         better_than_gru = test_mae < baseline_gru_mae
 
@@ -1390,7 +1463,6 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         print(f"  ✓ Baseline GRU MAE: {baseline_gru_mae:.6f}")
         print(f"  ✓ MAE Difference (vs GRU): {mae_diff_gru:+.6f}")
         print(f"  ✓ Better than GRU: {better_than_gru}")
-        # ============================================================================
 
         # Plot training curves
         plot_training_curves(ae_history, header_history, config, output_dir)
@@ -1400,6 +1472,7 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
             'config_idx': config_idx,
             'config_name': config_name,
             'n_ae_layers': config['n_ae_layers'],
+            'latent_percent': config['latent_percent'],
             'n_header_layers': config['n_header_layers'],
             'unit_type': config['unit_type'],
             'mask_percent': config['mask_percent'],
@@ -1413,16 +1486,12 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
             'test_mae': test_mae,
             'final_ae_loss': ae_history.history['val_loss'][-1],
             'final_header_loss': header_history.history['val_loss'][-1],
-            # ============================================================================
-            # *** MODIFIED: Updated metric names for baseline comparisons ***
             'baseline_lstm_mae': baseline_lstm_mae,
             'mae_diff_lstm': mae_diff_lstm,
             'better_than_LSTM': better_than_lstm,
-
             'baseline_gru_mae': baseline_gru_mae,
             'mae_diff_gru': mae_diff_gru,
             'better_than_GRU': better_than_gru,
-            # ============================================================================
             'status': 'success'
         }
 
@@ -1431,9 +1500,8 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
         tf.keras.backend.clear_session()
         gc.collect()
 
-        # Force additional cleanup
         import time
-        time.sleep(0.1)  # Brief pause to allow cleanup
+        time.sleep(0.1)
 
         print(f"  ✓ Configuration complete!")
 
@@ -1448,32 +1516,21 @@ def train_single_configuration(config_idx, config, train_data, test_data, train_
             'config_idx': config_idx,
             'config_name': config.get('config_name', 'unknown'),
             'test_mae': np.inf,
-            # ============================================================================
-            # *** MODIFIED: Include both baselines in failed runs ***
             'baseline_lstm_mae': baseline_lstm_mae,
             'mae_diff_lstm': np.inf,
             'better_than_LSTM': False,
-
             'baseline_gru_mae': baseline_gru_mae,
             'mae_diff_gru': np.inf,
             'better_than_GRU': False,
-            # ============================================================================
             'status': f'failed: {str(e)}'
         }
 
-        # Clean up on error
         tf.keras.backend.clear_session()
         gc.collect()
 
         return result
 
 
-# ============================================================================
-
-
-# ============================================================================
-# *** MODIFIED: run_grid_search - Added GRU baseline and EDA ***
-# ============================================================================
 def run_grid_search(train_data, test_data, train_targets, test_targets):
     """
     Run comprehensive grid search over all hyperparameter combinations
@@ -1497,15 +1554,10 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     print(f"Output directory: {output_dir}/")
     print(f"Target variable: {VARIABLE_TO_PREDICT}")
 
-    # ============================================================================
-    # *** NEW: Perform EDA after preprocessing and before training ***
-    # ============================================================================
+    # Perform EDA
     perform_eda(train_data, test_data, train_targets, test_targets, output_dir)
-    # ============================================================================
 
-    # ============================================================================
-    # *** MODIFIED: Train both LSTM and GRU baselines ***
-    # ============================================================================
+    # Train baselines
     baseline_lstm_model, baseline_lstm_history, baseline_lstm_mae = train_baseline_lstm(
         train_data, train_targets, test_data, test_targets, output_dir
     )
@@ -1521,11 +1573,11 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     print(f"✓ Baseline GRU Test MAE: {baseline_gru_mae:.6f}")
 
     print(f"\n✓ Both baseline models will be used for grid search comparisons")
-    # ============================================================================
 
     # Generate all hyperparameter combinations
     param_grid = {
         'n_ae_layers': AUTOENCODER_LAYER_COUNTS,
+        'latent_percent': LATENT_SPACE_PERCENTAGE,
         'n_header_layers': TASK_HEADER_LAYER_COUNTS,
         'unit_type': UNIT_TYPES,
         'mask_percent': MASKING_PERCENTAGES,
@@ -1547,41 +1599,12 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     print(f"Parallel workers: {NUM_THREADS}")
     print(f"Estimated time: ~{len(combinations) * 2 / NUM_THREADS:.0f} minutes (approximate)")
 
-    # Save grid search configuration
-    config_file = os.path.join(output_dir, 'grid_search_config.json')
-    #with open(config_file, 'w') as f:
-     #   json.dump({
-      #      'param_grid': {k: v for k, v in param_grid.items()},
-       #     'total_combinations': len(combinations),
-        #    'num_threads': NUM_THREADS,
-         #   'target_variable': VARIABLE_TO_PREDICT,
-            # *** MODIFIED: Include both baseline configurations ***
-          #  'baseline_lstm': {
-           #     'hidden_size': BASELINE_LSTM_HIDDEN_SIZE,
-            #    'dropout_rate': BASELINE_DROPOUT_RATE,
-             #   'learning_rate': BASELINE_LEARNING_RATE,
-              #  'batch_size': BASELINE_BATCH_SIZE,
-               # 'epochs': BASELINE_EPOCHS,
-                #'test_mae': baseline_lstm_mae
-    #        },
-     #       'baseline_gru': {
-      #          'hidden_size': BASELINE_GRU_HIDDEN_SIZE,
-       #         'dropout_rate': BASELINE_GRU_DROPOUT_RATE,
-        #        'learning_rate': BASELINE_GRU_LEARNING_RATE,
-         #       'batch_size': BASELINE_GRU_BATCH_SIZE,
-          #      'epochs': BASELINE_GRU_EPOCHS,
-           #     'test_mae': baseline_gru_mae
-            #},
-            #'timestamp': timestamp
-        #}, f, indent=2)
-
-    # Run grid search in parallel
+    # Run grid search
     results = []
 
     if NUM_THREADS == 1:
         # Sequential execution
         for idx, config in enumerate(combinations, 1):
-            # *** MODIFIED: Pass both baseline MAEs to each configuration ***
             result = train_single_configuration(
                 idx, config, train_data, test_data, train_targets, test_targets,
                 output_dir, baseline_lstm_mae, baseline_gru_mae
@@ -1592,7 +1615,7 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
             with file_lock:
                 save_results_csv(results, output_dir)
     else:
-        # Parallel execution using ProcessPoolExecutor (better for TensorFlow)
+        # Parallel execution
         print(f"\n{'=' * 70}")
         print("Starting parallel grid search...")
         print(f"{'=' * 70}\n")
@@ -1602,24 +1625,21 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
         results_list = manager.list()
 
         with ProcessPoolExecutor(max_workers=NUM_THREADS) as executor:
-            # Submit all jobs
             future_to_config = {
                 executor.submit(
                     train_single_configuration,
                     idx, config, train_data, test_data, train_targets, test_targets,
-                    output_dir, baseline_lstm_mae, baseline_gru_mae  # *** MODIFIED: Pass both baselines ***
+                    output_dir, baseline_lstm_mae, baseline_gru_mae
                 ): (idx, config)
                 for idx, config in enumerate(combinations, 1)
             }
 
-            # Collect results as they complete
             for future in as_completed(future_to_config):
                 idx, config = future_to_config[future]
                 try:
-                    result = future.result(timeout=3600)  # 1 hour timeout per config
+                    result = future.result(timeout=3600)
                     results.append(result)
 
-                    # Save intermediate results after each completion
                     save_results_csv(results, output_dir)
 
                     print(f"\n✓ Completed {len(results)}/{len(combinations)} configurations")
@@ -1630,7 +1650,6 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
                         'config_idx': idx,
                         'config_name': 'failed',
                         'test_mae': np.inf,
-                        # *** MODIFIED: Include both baselines ***
                         'baseline_lstm_mae': baseline_lstm_mae,
                         'mae_diff_lstm': np.inf,
                         'better_than_LSTM': False,
@@ -1653,9 +1672,6 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
     return results_df
 
 
-# ============================================================================
-
-
 def save_results_csv(results, output_dir, final=False):
     """Save results to CSV file"""
     results_df = pd.DataFrame(results)
@@ -1669,9 +1685,6 @@ def save_results_csv(results, output_dir, final=False):
         print(f"\n✓ Final results saved to: {filepath}")
 
 
-# ============================================================================
-# *** MODIFIED: print_grid_search_summary - Added GRU baseline comparison ***
-# ============================================================================
 def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baseline_gru_mae):
     """
     Print summary of grid search results
@@ -1688,9 +1701,6 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
     print(f"Successful runs: {len(successful)}")
     print(f"Failed runs: {len(results_df) - len(successful)}")
 
-    # ============================================================================
-    # *** MODIFIED: Baseline comparison statistics for both baselines ***
-    # ============================================================================
     if len(successful) > 0:
         print(f"\n{'=' * 70}")
         print("BASELINE COMPARISON SUMMARY")
@@ -1733,13 +1743,11 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
         if num_worse_gru > 0:
             worst_degradation_gru = successful['mae_diff_gru'].max()
             print(f"Worst degradation vs GRU: {worst_degradation_gru:+.6f}")
-    # ============================================================================
 
     if len(successful) > 0:
         print(f"\n{'=' * 70}")
         print("TOP 10 CONFIGURATIONS (by Test MAE)")
         print(f"{'=' * 70}")
-        # *** MODIFIED: Display both baseline comparisons ***
         print(
             f"{'Rank':<6} {'MAE':<12} {'vs LSTM':<12} {'Better?':<10} {'vs GRU':<12} {'Better?':<10} {'Config Name':<40}")
         print("-" * 100)
@@ -1758,7 +1766,6 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
         best = successful.iloc[0]
         print(f"Configuration Name: {best['config_name']}")
         print(f"Test MAE: {best['test_mae']:.6f}")
-        # *** MODIFIED: Display both baseline comparisons for best config ***
         print(f"\nBaseline Comparisons:")
         print(f"  LSTM Baseline MAE: {best['baseline_lstm_mae']:.6f}")
         print(f"  MAE Difference (vs LSTM): {best['mae_diff_lstm']:+.6f}")
@@ -1769,6 +1776,7 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
 
         print(f"\nHyperparameters:")
         print(f"  Autoencoder layers: {best['n_ae_layers']}")
+        print(f"  Latent space percentage: {best['latent_percent'] * 100:.0f}%")
         print(f"  Task header layers: {best['n_header_layers']}")
         print(f"  Unit type: {best['unit_type']}")
         print(f"  Masking percentage: {best['mask_percent'] * 100:.0f}%")
@@ -1782,8 +1790,9 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
 
         # Save best config to file
         best_config_file = os.path.join(output_dir, 'best_configuration.json')
-        #with open(best_config_file, 'w') as f:
-        #    json.dump(best.to_dict(), f, indent=2)
+        best_config_dict = best.to_dict()
+        with open(best_config_file, 'w') as f:
+            json.dump(best_config_dict, f, indent=2)
 
         print(f"\n✓ Best configuration saved to: {best_config_file}")
 
@@ -1795,16 +1804,13 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
     print("=" * 70)
     print(f"  📁 {output_dir}/")
     print(f"     📊 grid_search_results_final.csv - All configuration results")
-    print(f"     📊 grid_search_config.json - Grid search parameters")
     print(f"     📊 best_configuration.json - Best performing config details")
-    # *** MODIFIED: Include both baseline files ***
     print(f"     📊 baseline_lstm_results.json - Baseline LSTM results")
     print(f"     📊 baseline_lstm_training_curves.png - Baseline LSTM training plot")
     print(f"     🤖 baseline_lstm_model.keras - Trained baseline LSTM model")
     print(f"     📊 baseline_gru_results.json - Baseline GRU results")
     print(f"     📊 baseline_gru_training_curves.png - Baseline GRU training plot")
     print(f"     🤖 baseline_gru_model.keras - Trained baseline GRU model")
-    # *** NEW: EDA files ***
     print(f"     📁 eda/ - Exploratory Data Analysis outputs")
     print(f"        📊 summary_statistics.png - Dataset statistics table")
     print(f"        📊 feature_distributions.png - Feature distribution plots")
@@ -1816,30 +1822,19 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
     print(f"           📊 all_features_vs_target.png - Combined scatter plot grid")
     print(f"           📊 *_vs_target.png - Individual scatter plots")
     print(f"     📊 results_analysis.png - Performance visualizations")
-    print(f"     🤖 autoencoder_*.h5 - Trained autoencoder models")
-    print(f"     🤖 task_header_*.h5 - Trained task header models")
-    print(f"     📊 training_curves_*.png - Training history plots")
     print("=" * 70)
 
 
-# ============================================================================
-
-
-# ============================================================================
-# *** MODIFIED: create_results_visualizations - Added GRU baseline plots ***
-# ============================================================================
 def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, baseline_gru_mae):
     """
     Create visualizations analyzing grid search results
     Now includes both LSTM and GRU baseline comparison plots
     """
-    # *** MODIFIED: Changed to 4x3 grid to accommodate GRU baseline plots ***
     fig = plt.figure(figsize=(18, 16))
 
     # 1. MAE distribution
     ax1 = plt.subplot(4, 3, 1)
     ax1.hist(results_df['test_mae'], bins=30, edgecolor='black', alpha=0.7)
-    # *** MODIFIED: Add both baseline reference lines ***
     ax1.axvline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='Baseline LSTM')
     ax1.axvline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='Baseline GRU')
     ax1.set_xlabel('Test MAE')
@@ -1852,7 +1847,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax2 = plt.subplot(4, 3, 2)
     unit_types = results_df.groupby('unit_type')['test_mae'].apply(list)
     ax2.boxplot(unit_types.values, labels=unit_types.index)
-    # *** MODIFIED: Add both baseline reference lines ***
     ax2.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
     ax2.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax2.set_ylabel('Test MAE')
@@ -1864,7 +1858,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax3 = plt.subplot(4, 3, 3)
     ae_layers = results_df.groupby('n_ae_layers')['test_mae'].apply(list)
     ax3.boxplot(ae_layers.values, labels=ae_layers.index)
-    # *** MODIFIED: Add both baseline reference lines ***
     ax3.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
     ax3.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax3.set_xlabel('Number of Autoencoder Layers')
@@ -1878,7 +1871,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     mask_pcts = results_df.groupby('mask_percent')['test_mae'].apply(list)
     labels = [f"{int(k * 100)}%" for k in mask_pcts.index]
     ax4.boxplot(mask_pcts.values, labels=labels)
-    # *** MODIFIED: Add both baseline reference lines ***
     ax4.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
     ax4.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax4.set_xlabel('Masking Percentage')
@@ -1887,15 +1879,16 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax4.legend()
     ax4.grid(True, alpha=0.3)
 
-    # 5. MAE by activation function
+    # 5. MAE by latent space percentage
     ax5 = plt.subplot(4, 3, 5)
-    activations = results_df.groupby('activation')['test_mae'].apply(list)
-    ax5.boxplot(activations.values, labels=activations.index)
-    # *** MODIFIED: Add both baseline reference lines ***
+    latent_pcts = results_df.groupby('latent_percent')['test_mae'].apply(list)
+    labels_latent = [f"{int(k * 100)}%" for k in latent_pcts.index]
+    ax5.boxplot(latent_pcts.values, labels=labels_latent)
     ax5.axhline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
     ax5.axhline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
+    ax5.set_xlabel('Latent Space Percentage')
     ax5.set_ylabel('Test MAE')
-    ax5.set_title('MAE by Activation Function')
+    ax5.set_title('MAE by Latent Space Size')
     ax5.legend()
     ax5.grid(True, alpha=0.3)
 
@@ -1903,10 +1896,8 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax6 = plt.subplot(4, 3, 6)
     top_10 = results_df.head(10)
     y_pos = np.arange(len(top_10))
-    # *** MODIFIED: Color based on LSTM baseline comparison ***
     colors = ['green' if better else 'red' for better in top_10['better_than_LSTM']]
     ax6.barh(y_pos, top_10['test_mae'].values, color=colors, alpha=0.6)
-    # *** MODIFIED: Add both baseline reference lines ***
     ax6.axvline(baseline_lstm_mae, color='red', linestyle='--', linewidth=2, label='LSTM')
     ax6.axvline(baseline_gru_mae, color='blue', linestyle='--', linewidth=2, label='GRU')
     ax6.set_yticks(y_pos)
@@ -1916,10 +1907,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax6.invert_yaxis()
     ax6.legend()
     ax6.grid(True, alpha=0.3, axis='x')
-
-    # ============================================================================
-    # *** MODIFIED: LSTM Baseline comparison plots ***
-    # ============================================================================
 
     # 7. MAE Difference from LSTM Baseline
     ax7 = plt.subplot(4, 3, 7)
@@ -1954,10 +1941,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax9.set_title('MAE vs LSTM Baseline Difference')
     ax9.grid(True, alpha=0.3)
 
-    # ============================================================================
-    # *** NEW: GRU Baseline comparison plots ***
-    # ============================================================================
-
     # 10. MAE Difference from GRU Baseline
     ax10 = plt.subplot(4, 3, 10)
     ax10.hist(results_df['mae_diff_gru'], bins=30, edgecolor='black', alpha=0.7)
@@ -1989,7 +1972,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     ax12.set_ylabel('MAE Difference from GRU Baseline')
     ax12.set_title('MAE vs GRU Baseline Difference')
     ax12.grid(True, alpha=0.3)
-    # ============================================================================
 
     plt.tight_layout()
     filepath = os.path.join(output_dir, 'results_analysis.png')
@@ -1997,9 +1979,6 @@ def create_results_visualizations(results_df, output_dir, baseline_lstm_mae, bas
     plt.close()
 
     print(f"✓ Results visualization saved to: {filepath}")
-
-
-# ============================================================================
 
 
 # ============================================================================
