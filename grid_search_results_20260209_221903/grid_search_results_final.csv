@@ -1,0 +1,3 @@
+config_idx,config_name,n_ae_layers,latent_percent,n_header_layers,unit_type,mask_percent,activation,loss,optimizer,learning_rate,batch_size,epochs_ae,epochs_header,test_mae,final_ae_loss,final_header_loss,baseline_lstm_mae,mae_diff_lstm,better_than_LSTM,baseline_gru_mae,mae_diff_gru,better_than_GRU,status
+1,ae2_lat25_hd2_lstm_m10_relu_adam_lr0.001_bs64_mae,2,0.25,2,LSTM,0.1,relu,mae,adam,0.001,64,10,15,0.029853215,0.057508934289216995,0.030157340690493584,0.005993863,0.023859352,False,0.0061498145,0.0237034,False,success
+2,ae2_lat75_hd2_lstm_m10_relu_adam_lr0.001_bs64_mae,2,0.75,2,LSTM,0.1,relu,mae,adam,0.001,64,10,15,0.030722454,0.05447615310549736,0.030830353498458862,0.005993863,0.02472859,False,0.0061498145,0.02457264,False,success

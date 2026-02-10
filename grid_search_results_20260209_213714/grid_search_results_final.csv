@@ -1,0 +1,3 @@
+config_idx,config_name,test_mae,baseline_lstm_mae,mae_diff_lstm,better_than_LSTM,baseline_gru_mae,mae_diff_gru,better_than_GRU,status
+1,ae2_lat25_hd2_lstm_m10_relu_adam_lr0.001_bs64_mae,inf,0.005364479,inf,False,0.0061904048,inf,False,failed: Input contains NaN.
+2,ae2_lat75_hd2_lstm_m10_relu_adam_lr0.001_bs64_mae,inf,0.005364479,inf,False,0.0061904048,inf,False,failed: Input contains NaN.

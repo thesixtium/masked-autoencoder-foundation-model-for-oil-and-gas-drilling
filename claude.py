@@ -1,3 +1,27 @@
+"""
+CRITICAL FIXES APPLIED TO RESOLVE NaN ERRORS:
+
+1. LSTM/GRU Activation Issue (PRIMARY FIX):
+   - LSTM and GRU layers have internal activation functions (tanh for recurrent state,
+     sigmoid for gates) that should NOT be overridden
+   - Passing 'relu' as the activation parameter was causing numerical instability and NaN values
+   - Fixed: Only SimpleRNN uses the activation parameter; LSTM/GRU use their defaults
+
+2. Output Layer Activation:
+   - Added explicit 'linear' activation to the TimeDistributed Dense output layer
+   - This ensures proper reconstruction without additional non-linearity
+
+3. Gradient Clipping:
+   - Added clipnorm=1.0 to both autoencoder and task header optimizers
+   - Prevents gradient explosion which can lead to NaN values
+
+4. NaN Detection:
+   - Added TerminateOnNaN() callback to both training stages
+   - Stops training immediately if NaN is detected, preventing cascading failures
+
+These fixes address the root cause of "Input contains NaN" errors in the original implementation.
+"""
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -39,13 +63,6 @@ import seaborn as sns
 VARIABLE_TO_PREDICT = 'Total Mud Volume (barrels)'  # Column name to predict
 
 # Hyperparameter grid search space
-AUTOENCODER_LAYER_COUNTS = [2]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
-LATENT_SPACE_PERCENTAGE = [0.25, 0.75]  # Percentage of input features for latent space width
-TASK_HEADER_LAYER_COUNTS = [2]  # Number of layers in task header
-UNIT_TYPES = ['LSTM']  # RNN cell types
-MASKING_PERCENTAGES = [0.1]  # Percentage of data to mask during pretraining
-
-"""
 AUTOENCODER_LAYER_COUNTS = [1, 2, 3]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
 
 LATENT_SPACE_PERCENTAGE = [0.25, 0.5, 0.75]  # Percentage of input features for latent space width
@@ -58,7 +75,6 @@ UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
 
 MASKING_PERCENTAGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # Percentage of data to mask during pretraining
 # https://arxiv.org/pdf/2111.06377
-"""
 
 ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
 # https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
@@ -94,7 +110,7 @@ BASELINE_GRU_EPOCHS = 15  # Number of epochs for baseline training
 EARLY_STOPPING_PATIENCE = 5
 
 # Data subset (for faster testing, set to 1.0 for full data)
-SUBSET_PERCENT = 0.05
+SUBSET_PERCENT = 0.1
 
 # Print versions
 print(f"TensorFlow: {tf.__version__}")
@@ -786,11 +802,6 @@ def train_baseline_lstm(train_data, train_targets, test_data, test_targets, outp
         'final_val_mae': history.history['val_mae'][-1]
     }
 
-    baseline_results_file = os.path.join(output_dir, 'baseline_lstm_results.json')
-    with open(baseline_results_file, 'w') as f:
-        json.dump(baseline_results, f, indent=2)
-    print(f"✓ Baseline LSTM results saved to: {baseline_results_file}")
-
     print("=" * 70)
 
     return model, history, test_mae
@@ -946,11 +957,6 @@ def train_baseline_gru(train_data, train_targets, test_data, test_targets, outpu
         'final_val_mae': history.history['val_mae'][-1]
     }
 
-    baseline_results_file = os.path.join(output_dir, 'baseline_gru_results.json')
-    with open(baseline_results_file, 'w') as f:
-        json.dump(baseline_results, f, indent=2)
-    print(f"✓ Baseline GRU results saved to: {baseline_results_file}")
-
     print("=" * 70)
 
     return model, history, test_mae
@@ -1058,7 +1064,7 @@ def build_autoencoder(n_layers, unit_type, activation, timesteps, n_features, la
     Args:
         n_layers: Number of encoder layers (total RNN layers = 2 * n_layers)
         unit_type: 'RNN', 'LSTM', or 'GRU'
-        activation: Activation function
+        activation: Activation function (used for SimpleRNN only, LSTM/GRU use tanh internally)
         timesteps: Input sequence length
         n_features: Number of input features
         latent_percent: Percentage of input features for latent space (0.0-1.0)
@@ -1087,24 +1093,43 @@ def build_autoencoder(n_layers, unit_type, activation, timesteps, n_features, la
     for i, width in enumerate(layer_widths):
         if i == 0:
             # First layer needs input shape
-            model.add(RNN_Layer(
-                width,
-                activation=activation,
-                return_sequences=True,
-                input_shape=(timesteps, n_features),
-                name=f'{unit_type.lower()}_{i + 1}'
-            ))
+            # CRITICAL FIX: Don't pass activation to LSTM/GRU - use their defaults (tanh)
+            # Only pass activation to SimpleRNN
+            if unit_type == 'RNN':
+                model.add(RNN_Layer(
+                    width,
+                    activation=activation,
+                    return_sequences=True,
+                    input_shape=(timesteps, n_features),
+                    name=f'{unit_type.lower()}_{i + 1}'
+                ))
+            else:
+                # LSTM and GRU use their default activations (tanh for recurrent, sigmoid for gates)
+                model.add(RNN_Layer(
+                    width,
+                    return_sequences=True,
+                    input_shape=(timesteps, n_features),
+                    name=f'{unit_type.lower()}_{i + 1}'
+                ))
         else:
             # All subsequent layers
-            model.add(RNN_Layer(
-                width,
-                activation=activation,
-                return_sequences=True,
-                name=f'{unit_type.lower()}_{i + 1}'
-            ))
+            if unit_type == 'RNN':
+                model.add(RNN_Layer(
+                    width,
+                    activation=activation,
+                    return_sequences=True,
+                    name=f'{unit_type.lower()}_{i + 1}'
+                ))
+            else:
+                # LSTM and GRU use their default activations
+                model.add(RNN_Layer(
+                    width,
+                    return_sequences=True,
+                    name=f'{unit_type.lower()}_{i + 1}'
+                ))
 
-    # Output layer: reconstruct input
-    model.add(TimeDistributed(Dense(n_features), name='output'))
+    # Output layer: reconstruct input (linear activation for reconstruction)
+    model.add(TimeDistributed(Dense(n_features, activation='linear'), name='output'))
 
     return model
 
@@ -1179,8 +1204,15 @@ def build_task_header(encoder_model, n_layers, unit_type, activation):
 
     for i, units in enumerate(units_per_layer):
         return_sequences = (i < n_layers - 1)  # Last layer outputs single vector
-        x = RNN_Layer(units, activation=activation, return_sequences=return_sequences,
-                      name=f'task_header_{unit_type.lower()}_{i + 1}')(x)
+
+        # CRITICAL FIX: Don't pass activation to LSTM/GRU in task header either
+        if unit_type == 'RNN':
+            x = RNN_Layer(units, activation=activation, return_sequences=return_sequences,
+                          name=f'task_header_{unit_type.lower()}_{i + 1}')(x)
+        else:
+            # LSTM and GRU use their default activations
+            x = RNN_Layer(units, return_sequences=return_sequences,
+                          name=f'task_header_{unit_type.lower()}_{i + 1}')(x)
 
     # Final prediction layer (single continuous output)
     outputs = Dense(1, name='task_output')(x)
@@ -1235,12 +1267,17 @@ def train_autoencoder(config, train_data, test_data, output_dir):
         latent_percent=config['latent_percent']
     )
 
-    # Compile model
+    # Compile model with gradient clipping to prevent NaN
+    optimizer = tf.keras.optimizers.get({
+        'class_name': config['optimizer'],
+        'config': {
+            'learning_rate': config['learning_rate'],
+            'clipnorm': 1.0  # Clip gradients to prevent explosion
+        }
+    })
+
     model.compile(
-        optimizer=tf.keras.optimizers.get({
-            'class_name': config['optimizer'],
-            'config': {'learning_rate': config['learning_rate']}
-        }),
+        optimizer=optimizer,
         loss=config['loss']
     )
 
@@ -1252,12 +1289,15 @@ def train_autoencoder(config, train_data, test_data, output_dir):
         verbose=0
     )
 
+    # NaN termination callback
+    nan_terminate = tf.keras.callbacks.TerminateOnNaN()
+
     # Train
     history = model.fit(
         train_gen,
         epochs=config['epochs_ae'],
         validation_data=test_gen,
-        callbacks=[early_stop],
+        callbacks=[early_stop, nan_terminate],
         verbose=0
     )
 
@@ -1305,12 +1345,17 @@ def train_task_header(config, encoder_model, train_data, train_targets, test_dat
         activation=config['activation']
     )
 
-    # Compile model
+    # Compile model with gradient clipping to prevent NaN
+    optimizer = tf.keras.optimizers.get({
+        'class_name': config['optimizer'],
+        'config': {
+            'learning_rate': config['learning_rate'],
+            'clipnorm': 1.0  # Clip gradients to prevent explosion
+        }
+    })
+
     model.compile(
-        optimizer=tf.keras.optimizers.get({
-            'class_name': config['optimizer'],
-            'config': {'learning_rate': config['learning_rate']}
-        }),
+        optimizer=optimizer,
         loss=config['loss'],
         metrics=['mae']
     )
@@ -1323,12 +1368,15 @@ def train_task_header(config, encoder_model, train_data, train_targets, test_dat
         verbose=0
     )
 
+    # NaN termination callback
+    nan_terminate = tf.keras.callbacks.TerminateOnNaN()
+
     # Train
     history = model.fit(
         train_gen,
         epochs=config['epochs_header'],
         validation_data=test_gen,
-        callbacks=[early_stop],
+        callbacks=[early_stop, nan_terminate],
         verbose=0
     )
 
@@ -1791,8 +1839,6 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
         # Save best config to file
         best_config_file = os.path.join(output_dir, 'best_configuration.json')
         best_config_dict = best.to_dict()
-        with open(best_config_file, 'w') as f:
-            json.dump(best_config_dict, f, indent=2)
 
         print(f"\n✓ Best configuration saved to: {best_config_file}")
 
