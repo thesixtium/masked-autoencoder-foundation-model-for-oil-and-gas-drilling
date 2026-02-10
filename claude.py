@@ -75,7 +75,7 @@ BASELINE_GRU_EPOCHS = 15  # Number of epochs for baseline training
 EARLY_STOPPING_PATIENCE = 5
 
 # Data subset (for faster testing, set to 1.0 for full data)
-SUBSET_PERCENT = 0.3
+SUBSET_PERCENT = 0.10
 
 # Print versions
 print(f"TensorFlow: {tf.__version__}")
@@ -768,8 +768,8 @@ def train_baseline_lstm(train_data, train_targets, test_data, test_targets, outp
     }
 
     baseline_results_file = os.path.join(output_dir, 'baseline_lstm_results.json')
-    with open(baseline_results_file, 'w') as f:
-        json.dump(baseline_results, f, indent=2)
+    #with open(baseline_results_file, 'w') as f:
+    #    json.dump(baseline_results, f, indent=2)
     print(f"✓ Baseline LSTM results saved to: {baseline_results_file}")
 
     print("=" * 70)
@@ -928,8 +928,8 @@ def train_baseline_gru(train_data, train_targets, test_data, test_targets, outpu
     }
 
     baseline_results_file = os.path.join(output_dir, 'baseline_gru_results.json')
-    with open(baseline_results_file, 'w') as f:
-        json.dump(baseline_results, f, indent=2)
+   # with open(baseline_results_file, 'w') as f:
+   #     json.dump(baseline_results, f, indent=2)
     print(f"✓ Baseline GRU results saved to: {baseline_results_file}")
 
     print("=" * 70)
@@ -1549,31 +1549,31 @@ def run_grid_search(train_data, test_data, train_targets, test_targets):
 
     # Save grid search configuration
     config_file = os.path.join(output_dir, 'grid_search_config.json')
-    with open(config_file, 'w') as f:
-        json.dump({
-            'param_grid': {k: v for k, v in param_grid.items()},
-            'total_combinations': len(combinations),
-            'num_threads': NUM_THREADS,
-            'target_variable': VARIABLE_TO_PREDICT,
+    #with open(config_file, 'w') as f:
+     #   json.dump({
+      #      'param_grid': {k: v for k, v in param_grid.items()},
+       #     'total_combinations': len(combinations),
+        #    'num_threads': NUM_THREADS,
+         #   'target_variable': VARIABLE_TO_PREDICT,
             # *** MODIFIED: Include both baseline configurations ***
-            'baseline_lstm': {
-                'hidden_size': BASELINE_LSTM_HIDDEN_SIZE,
-                'dropout_rate': BASELINE_DROPOUT_RATE,
-                'learning_rate': BASELINE_LEARNING_RATE,
-                'batch_size': BASELINE_BATCH_SIZE,
-                'epochs': BASELINE_EPOCHS,
-                'test_mae': baseline_lstm_mae
-            },
-            'baseline_gru': {
-                'hidden_size': BASELINE_GRU_HIDDEN_SIZE,
-                'dropout_rate': BASELINE_GRU_DROPOUT_RATE,
-                'learning_rate': BASELINE_GRU_LEARNING_RATE,
-                'batch_size': BASELINE_GRU_BATCH_SIZE,
-                'epochs': BASELINE_GRU_EPOCHS,
-                'test_mae': baseline_gru_mae
-            },
-            'timestamp': timestamp
-        }, f, indent=2)
+          #  'baseline_lstm': {
+           #     'hidden_size': BASELINE_LSTM_HIDDEN_SIZE,
+            #    'dropout_rate': BASELINE_DROPOUT_RATE,
+             #   'learning_rate': BASELINE_LEARNING_RATE,
+              #  'batch_size': BASELINE_BATCH_SIZE,
+               # 'epochs': BASELINE_EPOCHS,
+                #'test_mae': baseline_lstm_mae
+    #        },
+     #       'baseline_gru': {
+      #          'hidden_size': BASELINE_GRU_HIDDEN_SIZE,
+       #         'dropout_rate': BASELINE_GRU_DROPOUT_RATE,
+        #        'learning_rate': BASELINE_GRU_LEARNING_RATE,
+         #       'batch_size': BASELINE_GRU_BATCH_SIZE,
+          #      'epochs': BASELINE_GRU_EPOCHS,
+           #     'test_mae': baseline_gru_mae
+            #},
+            #'timestamp': timestamp
+        #}, f, indent=2)
 
     # Run grid search in parallel
     results = []
@@ -1782,8 +1782,8 @@ def print_grid_search_summary(results_df, output_dir, baseline_lstm_mae, baselin
 
         # Save best config to file
         best_config_file = os.path.join(output_dir, 'best_configuration.json')
-        with open(best_config_file, 'w') as f:
-            json.dump(best.to_dict(), f, indent=2)
+        #with open(best_config_file, 'w') as f:
+        #    json.dump(best.to_dict(), f, indent=2)
 
         print(f"\n✓ Best configuration saved to: {best_config_file}")
 
