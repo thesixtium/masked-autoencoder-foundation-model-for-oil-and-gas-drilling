@@ -73,7 +73,7 @@ TASK_HEADER_LAYER_COUNTS = [1, 2, 3]  # Number of layers in task header
 UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
 # https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
 
-MASKING_PERCENTAGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # Percentage of data to mask during pretraining
+MASKING_PERCENTAGES = [0.2, 0.4, 0.6, 0.8]  # Percentage of data to mask during pretraining
 # https://arxiv.org/pdf/2111.06377
 
 ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
