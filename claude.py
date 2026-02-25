@@ -63,17 +63,17 @@ import seaborn as sns
 VARIABLE_TO_PREDICT = 'Total Mud Volume (barrels)'  # Column name to predict
 
 # Hyperparameter grid search space
-AUTOENCODER_LAYER_COUNTS = [1, 2, 3]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
+AUTOENCODER_LAYER_COUNTS = [1, 2]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
 
-LATENT_SPACE_PERCENTAGE = [0.25, 0.5, 0.75]  # Percentage of input features for latent space width
+LATENT_SPACE_PERCENTAGE = [0.5, 0.8]  # Percentage of input features for latent space width
 
-TASK_HEADER_LAYER_COUNTS = [1, 2, 3]  # Number of layers in task header
+TASK_HEADER_LAYER_COUNTS = [1, 2]  # Number of layers in task header
 # https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
 
 UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
 # https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
 
-MASKING_PERCENTAGES = [0.2, 0.4, 0.6, 0.8]  # Percentage of data to mask during pretraining
+MASKING_PERCENTAGES = [0.2, 0.8]  # Percentage of data to mask during pretraining
 # https://arxiv.org/pdf/2111.06377
 
 ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
@@ -81,7 +81,7 @@ ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
 
 LOSS_FUNCTIONS = ['mae']  # Loss functions for both stages
 OPTIMIZERS = ['adam']  # Optimizers
-LEARNING_RATES = [0.001]  # Learning rates
+LEARNING_RATES = [0.001, 0.0001]  # Learning rates
 BATCH_SIZES = [64]  # Batch sizes
 EPOCHS_AUTOENCODER = [10]  # Epochs for autoencoder pretraining
 EPOCHS_TASK_HEADER = [15]  # Epochs for task header training
@@ -110,7 +110,7 @@ BASELINE_GRU_EPOCHS = 15  # Number of epochs for baseline training
 EARLY_STOPPING_PATIENCE = 5
 
 # Data subset (for faster testing, set to 1.0 for full data)
-SUBSET_PERCENT = 0.1
+SUBSET_PERCENT = 0.2
 
 # Print versions
 print(f"TensorFlow: {tf.__version__}")
