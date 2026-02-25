@@ -149,6 +149,12 @@ COLUMNS = [
     'Total Mud Volume (barrels)'
 ]
 
+TARGET_COL_IDX = COLUMNS.index(VARIABLE_TO_PREDICT)
+
+def drop_target_col(data):
+    """Remove target column from input features."""
+    return np.delete(data, TARGET_COL_IDX, axis=2)
+
 FEATURE_NAMES = [
     'Weight on Bit',
     'Rotary RPM',
@@ -301,12 +307,13 @@ def preprocess_data_once():
     train_data = np.array(train_windows, dtype=np.float32)
     test_data = np.array(test_windows, dtype=np.float32)
 
-    # Extract target variable index
-    target_idx = COLUMNS.index(VARIABLE_TO_PREDICT)
+    # Extract targets BEFORE dropping the column
+    train_targets = np.mean(train_data[:, :, TARGET_COL_IDX], axis=1)
+    test_targets = np.mean(test_data[:, :, TARGET_COL_IDX], axis=1)
 
-    # Extract targets for task header (averaged over time window)
-    train_targets = np.mean(train_data[:, :, target_idx], axis=1)
-    test_targets = np.mean(test_data[:, :, target_idx], axis=1)
+    # Drop target from inputs so model can't trivially copy it
+    train_data = drop_target_col(train_data)
+    test_data = drop_target_col(test_data)
 
     del windows, windows1, windows2, windows1_sampled, windows2_sampled, train_windows, test_windows
     gc.collect()
