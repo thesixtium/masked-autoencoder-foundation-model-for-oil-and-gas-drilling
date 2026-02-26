@@ -81,7 +81,7 @@ ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
 
 LOSS_FUNCTIONS = ['mae']  # Loss functions for both stages
 OPTIMIZERS = ['adam']  # Optimizers
-LEARNING_RATES = [0.001, 0.0001]  # Learning rates
+LEARNING_RATES = [0.001]  # Learning rates
 BATCH_SIZES = [64]  # Batch sizes
 EPOCHS_AUTOENCODER = [10]  # Epochs for autoencoder pretraining
 EPOCHS_TASK_HEADER = [15]  # Epochs for task header training
@@ -371,8 +371,11 @@ def perform_eda(train_data, test_data, train_targets, test_targets, output_dir):
     averaged_data = np.mean(all_data, axis=1)
 
     # Create DataFrame for easier manipulation
-    df_averaged = pd.DataFrame(averaged_data, columns=FEATURE_NAMES)
-
+    eda_feature_names = [name for i, name in enumerate(FEATURE_NAMES) if i != TARGET_COL_IDX]
+    df_averaged = pd.DataFrame(averaged_data, columns=eda_feature_names)
+    target_feature_name = FEATURE_NAMES[TARGET_COL_IDX]
+    df_averaged[target_feature_name] = all_targets  # add target back for EDA
+    
     # Compute summary statistics
     summary_stats = df_averaged.describe()
 
