@@ -1,27 +1,3 @@
-"""
-CRITICAL FIXES APPLIED TO RESOLVE NaN ERRORS:
-
-1. LSTM/GRU Activation Issue (PRIMARY FIX):
-   - LSTM and GRU layers have internal activation functions (tanh for recurrent state,
-     sigmoid for gates) that should NOT be overridden
-   - Passing 'relu' as the activation parameter was causing numerical instability and NaN values
-   - Fixed: Only SimpleRNN uses the activation parameter; LSTM/GRU use their defaults
-
-2. Output Layer Activation:
-   - Added explicit 'linear' activation to the TimeDistributed Dense output layer
-   - This ensures proper reconstruction without additional non-linearity
-
-3. Gradient Clipping:
-   - Added clipnorm=1.0 to both autoencoder and task header optimizers
-   - Prevents gradient explosion which can lead to NaN values
-
-4. NaN Detection:
-   - Added TerminateOnNaN() callback to both training stages
-   - Stops training immediately if NaN is detected, preventing cascading failures
-
-These fixes address the root cause of "Input contains NaN" errors in the original implementation.
-"""
-
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -65,7 +41,7 @@ VARIABLE_TO_PREDICT = 'Total Mud Volume (barrels)'  # Column name to predict
 # Hyperparameter grid search space
 AUTOENCODER_LAYER_COUNTS = [1, 2]  # Number of encoder/decoder layers (total RNN layers = 2 * this value)
 
-LATENT_SPACE_PERCENTAGE = [0.5, 0.8]  # Percentage of input features for latent space width
+LATENT_SPACE_PERCENTAGE = [0.2, 0.5, 0.8]  # Percentage of input features for latent space width
 
 TASK_HEADER_LAYER_COUNTS = [1, 2]  # Number of layers in task header
 # https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
@@ -73,7 +49,7 @@ TASK_HEADER_LAYER_COUNTS = [1, 2]  # Number of layers in task header
 UNIT_TYPES = ['LSTM', 'GRU']  # RNN cell types
 # https://www.mdpi.com/2073-8994/17/11/1905#Results_and_Analysis
 
-MASKING_PERCENTAGES = [0.2, 0.8]  # Percentage of data to mask during pretraining
+MASKING_PERCENTAGES = [0.2, 0.5, 0.8]  # Percentage of data to mask during pretraining
 # https://arxiv.org/pdf/2111.06377
 
 ACTIVATION_FUNCTIONS = ['relu']  # Activation functions
@@ -94,7 +70,7 @@ BASELINE_LSTM_HIDDEN_SIZE = 64  # Fixed LSTM hidden size for baseline
 BASELINE_DROPOUT_RATE = 0.3  # Fixed dropout rate for baseline
 BASELINE_LEARNING_RATE = 0.001  # Learning rate for baseline
 BASELINE_BATCH_SIZE = 64  # Batch size for baseline
-BASELINE_EPOCHS = 15  # Number of epochs for baseline training
+BASELINE_EPOCHS = 1  # Number of epochs for baseline training
 
 # ============================================================================
 # *** NEW: BASELINE GRU CONFIGURATION (identical to LSTM except layer type) ***
@@ -103,7 +79,7 @@ BASELINE_GRU_HIDDEN_SIZE = 64  # Fixed GRU hidden size for baseline
 BASELINE_GRU_DROPOUT_RATE = 0.3  # Fixed dropout rate for baseline
 BASELINE_GRU_LEARNING_RATE = 0.001  # Learning rate for baseline
 BASELINE_GRU_BATCH_SIZE = 64  # Batch size for baseline
-BASELINE_GRU_EPOCHS = 15  # Number of epochs for baseline training
+BASELINE_GRU_EPOCHS = 1 # Number of epochs for baseline training
 # ============================================================================
 
 # Early stopping patience
@@ -139,11 +115,8 @@ tf.config.threading.set_intra_op_parallelism_threads(2)
 # Column definitions
 COLUMNS = [
     'Weight on Bit (klbs)',
-    'Rotary RPM (RPM)',
     'Total Pump Output (gal_per_min)',
     'Rate Of Penetration (ft_per_hr)',
-    'Standpipe Pressure (psi)',
-    'Rotary Torque (kft_lb)',
     'Hole Depth (feet)',
     'Bit Depth (feet)',
     'Total Mud Volume (barrels)'
@@ -157,11 +130,8 @@ def drop_target_col(data):
 
 FEATURE_NAMES = [
     'Weight on Bit',
-    'Rotary RPM',
     'Total Pump Output',
     'Rate Of Penetration',
-    'Standpipe Pressure',
-    'Rotary Torque',
     'Hole Depth',
     'Bit Depth',
     'Total Mud Volume'
@@ -375,7 +345,7 @@ def perform_eda(train_data, test_data, train_targets, test_targets, output_dir):
     df_averaged = pd.DataFrame(averaged_data, columns=eda_feature_names)
     target_feature_name = FEATURE_NAMES[TARGET_COL_IDX]
     df_averaged[target_feature_name] = all_targets  # add target back for EDA
-    
+
     # Compute summary statistics
     summary_stats = df_averaged.describe()
 
